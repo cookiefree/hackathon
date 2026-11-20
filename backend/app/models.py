@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class LessonStatus(str, Enum):
@@ -41,8 +41,18 @@ class Exam(BaseModel):
 
 
 class SpokenHomework(BaseModel):
+    # Field order matters: the model writes the verbatim quote first, then paraphrases it.
+    quote: str = ""               # verbatim from the transcript ("" if the LLM gave none)
     text: str
     due: str | None = None        # as said in the lesson, e.g. "Tuesday"
+    quote_verified: bool = False  # set by the agent: the quote really occurs in the transcript
+
+
+class TestHint(BaseModel):
+    """A 'this will be on the test' moment."""
+    quote: str = ""
+    text: str
+    quote_verified: bool = False
 
 
 class LessonNote(BaseModel):
@@ -50,14 +60,30 @@ class LessonNote(BaseModel):
     summary: str
     concepts: list[str] = []
     definitions: list[str] = []   # definitions and formulas
-    test_hints: list[str] = []    # "this will be on the test" moments
+    test_hints: list[TestHint] = []
     homework: list[SpokenHomework] = []
+
+    @field_validator("test_hints", mode="before")
+    @classmethod
+    def _coerce_hint_strings(cls, v):
+        # The stub LLM returns plain strings.
+        if isinstance(v, list):
+            return [{"text": x} if isinstance(x, str) else x for x in v]
+        return v
+
+
+class CrossCheckStatus(str, Enum):
+    IN_UNTIS = "in_untis"
+    UNSURE = "unsure"
+    NOT_IN_UNTIS = "not_in_untis"
 
 
 class CrossCheckItem(BaseModel):
     spoken: SpokenHomework
-    in_untis: bool
-    match: Homework | None = None
+    in_untis: bool                # True only for a confident match (status == in_untis)
+    status: CrossCheckStatus = CrossCheckStatus.NOT_IN_UNTIS
+    score: float = 0.0
+    match: Homework | None = None  # best candidate for in_untis and unsure, else None
 
 
 class Analysis(BaseModel):

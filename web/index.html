@@ -37,6 +37,12 @@
   textarea:focus { outline:none; border-color:var(--magenta); }
   .run { background:none; border:1px solid #333; color:var(--fg); font:inherit; padding:2px 12px; cursor:pointer; margin-top:6px; }
   .run:hover { border-color:var(--magenta); color:var(--magenta); }
+  .run:disabled { opacity:.5; cursor:wait; border-color:#333; color:var(--dim); }
+  .quote { display:block; margin-left:2ch; color:var(--dim); font-size:12px; }
+  .vq { font-size:12px; }
+  .vq.ok { color:var(--green); }
+  .vq.warn, .maybe { color:#d8b040; }
+  .err { color:var(--red); }
   .sec { color:var(--magenta); margin-top:10px; }
   .res ul { margin:2px 0 0; padding-left:2ch; list-style:none; }
   .res li::before { content:"- "; color:var(--dim); }
@@ -108,21 +114,51 @@ $("next").onclick = () => { week++; loadTimetable(); };
 $("today").onclick = () => { week = 0; loadTimetable(); };
 
 const list = (title, xs) => xs.length ? `<div class="sec">${title}</div><ul>${xs.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
+// A verbatim quote with its check mark. Quotes the model could not prove are flagged, never hidden.
+const quoteLine = x => x.quote
+  ? `<span class="quote">&ldquo;${esc(x.quote)}&rdquo; ${x.quote_verified
+      ? `<span class="vq ok">[quote verified]</span>`
+      : `<span class="vq warn">[quote NOT found in transcript]</span>`}</span>`
+  : `<span class="quote"><span class="vq warn">[no quote]</span></span>`;
+
+const hints = xs => xs.length
+  ? `<div class="sec">test hints</div><ul>${xs.map(h => `<li>${esc(h.text)}${quoteLine(h)}</li>`).join("")}</ul>` : "";
+
+const badge = c => c.status === "in_untis" ? `<span class="ok">[in untis]</span>`
+  : c.status === "unsure" ? `<span class="maybe">[maybe in untis]</span>`
+  : `<span class="miss">[NOT IN UNTIS]</span>`;
+
+let busy = false;
 $("go").onclick = async () => {
   const transcript = $("tx").value.trim();
-  if (!transcript) return;
-  $("astatus").textContent = "analyzing...";
-  const r = await fetch("/api/analyze", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ transcript }) });
-  if (!r.ok) { $("astatus").textContent = `error ${r.status}`; return; }
-  const a = await r.json();
-  $("astatus").textContent = `llm: ${a.llm}` + (a.lesson ? ` · lesson: ${a.lesson.subject}` : " · lesson: unknown");
-  const cc = a.crosscheck.map(c => c.in_untis
-    ? `<li><span class="ok">[in untis]</span> ${esc(c.spoken.text)}</li>`
-    : `<li><span class="miss">[NOT IN UNTIS]</span> ${esc(c.spoken.text)}${c.spoken.due ? ` <span class="dim">(due ${esc(c.spoken.due)})</span>` : ""}</li>`).join("");
-  $("res").innerHTML =
-    `<div class="sec">summary</div><div>${esc(a.note.summary)}</div>` +
-    list("concepts", a.note.concepts) + list("definitions", a.note.definitions) + list("test hints", a.note.test_hints) +
-    (cc ? `<div class="sec">homework cross-check</div><ul>${cc}</ul>` : "");
+  if (!transcript || busy) return;
+  busy = true; $("go").disabled = true;               // no double-click queueing a second 45 s request
+  const t0 = Date.now();
+  const secs = () => Math.round((Date.now() - t0) / 1000);
+  const tick = setInterval(() => { $("astatus").textContent = `analyzing... ${secs()}s`; }, 500);
+  $("astatus").className = "dim";
+  try {
+    const r = await fetch("/api/analyze", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ transcript }) });
+    if (!r.ok) {
+      let msg = `error ${r.status}`;
+      try { const e = await r.json(); if (e.detail) msg += `: ${typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail)}`; } catch (_) {}
+      $("astatus").className = "err"; $("astatus").textContent = msg;
+      return;
+    }
+    const a = await r.json();
+    $("astatus").textContent = `llm: ${a.llm} · ${secs()}s` + (a.lesson ? ` · lesson: ${a.lesson.subject}` : " · lesson: unknown");
+    const cc = a.crosscheck.map(c => `<li>${badge(c)} ${esc(c.spoken.text)}${c.spoken.due ? ` <span class="dim">(due ${esc(c.spoken.due)})</span>` : ""}`
+      + (c.match && c.status === "unsure" ? `<span class="quote">possible match: ${esc(c.match.text)} (score ${c.score})</span>` : "")
+      + quoteLine(c.spoken) + `</li>`).join("");
+    $("res").innerHTML =
+      `<div class="sec">summary</div><div>${esc(a.note.summary)}</div>` +
+      list("concepts", a.note.concepts) + list("definitions", a.note.definitions) + hints(a.note.test_hints) +
+      (cc ? `<div class="sec">homework cross-check</div><ul>${cc}</ul>` : "");
+  } catch (e) {
+    $("astatus").className = "err"; $("astatus").textContent = `request failed: ${e.message}`;
+  } finally {
+    clearInterval(tick); busy = false; $("go").disabled = false;
+  }
 };
 loadTimetable(); loadHomework();
 </script>

@@ -4,3 +4,6 @@ data/
 vault/
 __pycache__/
 .obsidian/
+
+# runtime data is ignored, but the app's own data files (subjects.json) are source
+!backend/app/data/

@@ -125,7 +125,7 @@ Order of milestones: (1) Untis or mock data, (2) audio to note, (3) cross-check 
 - The REST endpoints D needs: `POST /recordings`, `GET /lessons`, `GET /lessons/{id}/note`, `GET /tasks`, `GET /quiz/next`, `POST /quiz/{id}/answer`.
 
 ## Config (`.env`)
-`UNTIS_SERVER`, `UNTIS_SCHOOL`, `UNTIS_USER`, `UNTIS_PASSWORD`, `UNTIS_PROVIDER=real|mock`, `TELEGRAM_TOKEN`, `LLM_PROVIDER=claude|ollama`, `ANTHROPIC_API_KEY`, `WHISPER_MODEL=small`, `VAULT_PATH`, `DB_PATH`.
+`UNTIS_SERVER`, `UNTIS_SCHOOL`, `UNTIS_USER`, `UNTIS_PASSWORD`, `UNTIS_PROVIDER=real|mock`, `TELEGRAM_TOKEN`, `LLM_PROVIDER=stub|llamacpp|claude|ollama` (`stub` and `llamacpp` are built; `claude` and `ollama` are planned), `LLAMACPP_URL`, `LLAMACPP_TIMEOUT`, `ANTHROPIC_API_KEY`, `WHISPER_MODEL=small`, `VAULT_PATH`, `DB_PATH`.
 
 ## Open questions
 - Claude API or local model? Decide by Saturday morning. Local needs a GPU for usable tool calling.
