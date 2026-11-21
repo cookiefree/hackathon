@@ -11,19 +11,19 @@ See `docs/idea.md` for the pitch and `docs/structure.md` for the planned layout.
 
 **Done**
 - Idea and project structure documented (`docs/`).
-- **Accounts** (`backend/app/auth.py`). In Telegram a person joins with an invite link and can connect a school (WebUntis) account with `/login`. On the website they sign in with the same school account. Either way the password is checked once with WebUntis and is never stored or logged, each person sees only their own schedule, homework and uploads, failed logins are rate-limited (per source, with a higher per-username limit so nobody can lock a classmate out), and website login is refused over plain HTTP except on localhost.
+- **Accounts** (`backend/app/auth.py`). In Telegram a person joins with an invite link and can connect a school (WebUntis) account with `/login`, for **any school on WebUntis**: the bot asks for the school (searching WebUntis's public school list and showing numbered matches), then the username, then the password, one message each. On the website they sign in with the same school account. Either way the password is checked once with WebUntis and is never stored or logged, each person sees only their own schedule, homework and uploads, failed logins are rate-limited (per source, with a higher per-username limit so nobody can lock a classmate out), and website login is refused over plain HTTP except on localhost.
 - Untis provider layer (`backend/app/untis/`): `real` and `mock` behind one interface, with timetable (rooms, cancellations, substitution notes), homework and `lesson_at(time)`.
 - Terminal-style web page (`web/index.html`): login, the user's week schedule, open homework, photo upload (drop area, several photos, camera button on phones), the materials list with reading status, and a search box.
 - **Photo uploads** from the web page and from a Telegram bot (`@untisianbot`). Photos are stored in `data/uploads/`, indexed in SQLite (`data/app.db`) with an owner, a Kurs and a kind (exam, worksheet, book, board, notes), and mirrored as Markdown notes into an Obsidian vault (`vault/`, optional, rebuildable from the DB).
 - **Telegram bot** (`@untisianbot`, `backend/app/telegram_bot.py`), the main interface:
   - **Invite links:** an admin sends `/invite` and gets `https://t.me/<bot>?start=CODE`, with a use limit and a 14-day expiry (`/invites`, `/revoke`). Anyone else is told the bot is invite-only. Admins are the Telegram IDs in `ALLOWED_USERS`.
-  - **Uploading:** send photos (best as a File, not a Photo), tap or type the Kurs (buttons come from the person's own timetable once they `/login`), tap the kind. Albums are handled as one batch. Limits: 20 photos at a time, 500 per person.
+  - **Uploading:** send photos (best as a File, not a Photo), tap or type the Kurs (buttons come from the person's own timetable once they have logged in), tap the kind. Albums are handled as one batch. Limits: 20 photos at a time, 500 per person.
   - **Commands:** `/week`, `/today`, `/homework`, `/search`, `/list`, `/show 12` (the text of a photo), `/delete 12`, `/retry 12`, `/login`, `/logout`, `/cancel`, `/help`. They appear in Telegram's `/` menu, and admins also see the invite commands.
   - **Notifications:** when a photo has been read, the bot sends a message. Everything works only in private chats.
   - Website accounts can be connected with `/link CODE` (hidden from the menu).
 - **Reading text from photos** (`backend/app/ocr/`): with `OCR_PROVIDER=gemini` a background worker sends each photo to the Gemini API (default `gemini-3.5-flash-lite`, about 1 s per photo in testing), stores the text, and makes it searchable (`/api/search`). Failed reads can be retried. Student name fields are blanked in the text on a best-effort basis.
 - Agent core: send a lesson transcript to `/api/analyze` (login required) and get a structured note plus a homework cross-check against Untis. Runs behind a stub LLM for now (`LLM_PROVIDER=stub`), so it costs nothing; real models plug in via the `LLMClient` interface. No longer shown on the page.
-- Offline tests in `backend/scripts/`: `test_bot_flow.py` (about 90 checks: migration, invites, accounts, `/login`, the commands, ownership, throttling, upload limits, the command menu) and `test_ocr.py` (worker, statuses, search, redaction).
+- Offline tests in `backend/scripts/`: `test_bot_flow.py` (about 110 checks: migration, invites, accounts, the guided `/login` and school search, the commands, ownership, throttling, upload limits, the command menu) and `test_ocr.py` (worker, statuses, search, redaction).
 - A security review of the password and account code found and fixed: the bot token appearing in logs, albums being handled one photo at a time, lockout abuse, a vault path-traversal case, and several limits.
 
 **Known limits**
@@ -52,7 +52,7 @@ cp .env.example .env        # fill in the Untis server/school (and optional Tele
 UNTIS_PROVIDER=real .venv/bin/uvicorn app.main:app --app-dir backend    # then open localhost:8000
 ```
 
-`UNTIS_PROVIDER` must be set explicitly, otherwise login is disabled. `real` checks logins against WebUntis (`UNTIS_SERVER` and `UNTIS_SCHOOL` in `.env`). `mock` is a demo mode with fake data: any username with the password `demo`.
+`UNTIS_PROVIDER` must be set explicitly, otherwise login is disabled. `real` checks logins against WebUntis (`UNTIS_SERVER` and `UNTIS_SCHOOL` in `.env` set the school for the website; the Telegram `/login` lets each person pick theirs). `mock` is a demo mode with fake data: any username with the password `demo`.
 
 `backend/scripts/test_untis.py` checks the Untis login with the credentials in `.env`. Uploads go to `data/` and `vault/` (both gitignored).
 

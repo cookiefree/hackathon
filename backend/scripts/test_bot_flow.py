@@ -130,26 +130,91 @@ f.on_files(222, [(png((6, 6, 6)), "d.png")]); f.on_text(222, "M-GK4"); r = f.on_
 materials.MAX_PER_OWNER = orig
 check("per-user upload limit enforced", "limit" in r.text.lower() and len(materials.list_materials(owner="tg:222")) == 1)
 
-# ---- 6. /login with a school account -----------------------------------------------------------
+# ---- 6. guided /login: school, then username, then password ------------------------------------------
+def guided(flow, uid, school="demo", username="anna", password="demo"):
+    """Walk the whole conversation; returns every reply in order."""
+    out = [flow.login(uid)]
+    out.append(flow.on_text(uid, school))
+    if flow.sessions.get(uid) and flow.sessions[uid].state == "login_pick":
+        out.append(flow.on_choice(uid, "school:0"))
+    out.append(flow.on_text(uid, username))
+    out.append(flow.on_text(uid, password))
+    return out
+
 check("/week before login asks for /login", "/login" in f.week(223).text and "/login" in f.homework(223).text)
-check("/login without arguments explains itself and the password risk", "never store" in f.login(223).text and "Telegram itself" in f.login(223).text)
-check("/login by a stranger is refused", "invite-only" in f.login(999, "a", "b").text)
-r = f.login(223, "anna", "wrong")
-check("wrong password rejected with a clear message", "password 'demo'" in r.text or "Wrong" in r.text)
-r = f.login(223, "anna", "demo")
-check("/login succeeds and reports Kurse and homework", "Logged in" in r.text and "4 Kurse" in r.text and "1 open" in r.text
-      and "did not keep your password" in r.text)
+check("/login by a stranger is refused", "invite-only" in f.login(999).text)
+check("/login with details typed after it refuses and says what to do", "on its own" in f.login(223, "anna", "demo").text)
+check("a bare /login starts by asking for the school", "Which school" in f.login(223).text and f.sessions[223].state == "login_school")
+check("the school and username steps are not secret, the username and password steps are",
+      not f.sensitive(223))
+r = f.on_text(223, "x")
+check("a one-letter school search is refused", "two letters" in r.text)
+r = f.on_text(223, "nonexistent school")
+check("an unknown school says so and keeps asking", "No school found" in r.text and f.sessions[223].state == "login_school")
+r = f.on_text(223, "demo")
+check("a school name shows numbered matches with buttons", "1. Demo School" in r.text and buttons(r) == [("1", "school:0")] and f.sessions[223].state == "login_pick")
+r = f.on_text(223, "demo again")
+check("typing again while picking searches again", "1. Demo School" in r.text)
+check("a bad button choice is ignored", "expired" in f.on_choice(223, "school:7").text and f.sessions[223].state == "login_pick")
+r = f.on_choice(223, "school:0")
+check("choosing the school asks for the username", "Demo School" in r.text and "username" in r.text and f.sessions[223].state == "login_user")
+check("the username message is hidden", f.sensitive(223))
+r = f.on_text(223, "anna")
+check("then the password, with the privacy warning, and it is hidden", "never store" in r.text and "Telegram itself" in r.text and f.sensitive(223))
+r = f.on_text(223, "demo")
+check("a correct login reports school, Kurse and homework", "Logged in at Demo School" in r.text and "4 Kurse" in r.text
+      and "1 open" in r.text and "did not keep your password" in r.text)
+check("nothing about the login is kept after it (no session, no username, no password)", 223 not in f.sessions)
+check("the chosen school is remembered for the account", auth.school_of("tg:223")["name"] == "Demo School")
 check("/week lists the lessons with a cancelled one tagged", "Week" in f.week(223).text and "[cancelled]" in f.week(223).text)
 check("/week next and /today answer", f.week(223, "next").text and f.today(223).text)
 check("/homework shows the open item", "Aufgabenblatt" in f.homework(223).text)
 f.on_files(223, [(png((7, 7, 7)), "z.png")])
-check("Kurs buttons now come from their own timetable", {"M-GK4", "E5-GK3", "PH-GK1", "D-GK4"} <= {b[0] for b in buttons(f._ask_kurs(223))})
+check("Kurs buttons come from their own timetable", {"M-GK4", "E5-GK3", "PH-GK1", "D-GK4"} <= {b[0] for b in buttons(f._ask_kurs(223))})
 f.cancel(223)
 check("another account's schedule is not visible", "/login" in f.week(222).text)
-check("/logout forgets the schedule", "gone" in f.logout(223).text and "/login" in f.week(223).text)
+
+r = guided(f, 224 if False else 222, password="wrong")[-1]
+check("a wrong password is reported and the flow is over", "password" in r.text.lower() and "/login" in r.text and 222 not in f.sessions)
+f.start(224, auth.create_invite(3))
+f.on_files(224, [(png((2, 2, 2)), "w.png")])
+check("/login is refused while photos are waiting", "photos waiting" in f.login(224).text)
+f.cancel(224)
+f.login(224)
+check("photos cannot be sent in the middle of a login", "middle of logging in" in f.on_files(224, [(png((3, 3, 3)), "w2.png")]).text)
+check("/cancel ends a login in progress", "Nothing was saved" in f.cancel(224).text and 224 not in f.sessions)
+f.login(224); f.sessions[224].touched -= tb.SESSION_IDLE + 5
+check("an abandoned login expires and is no longer treated as secret", not f.sensitive(224))
+check("/logout forgets the schedule and the school", "gone" in f.logout(223).text and "/login" in f.week(223).text and auth.school_of("tg:223") is None)
+
+# any school: the server comes from WebUntis's search, never from the user
+from app.untis import schools as sch                         # noqa: E402
+check("only <name>.webuntis.com servers are accepted", sch.valid_server("hpg.webuntis.com") and not any(
+      sch.valid_server(h) for h in ("evil.com", "hpg.webuntis.com.evil.com", "a.b.webuntis.com", "127.0.0.1", "webuntis.com", "")))
+many = [sch.School(f"s{i}.webuntis.com", f"s{i}", f"School {i}", f"Town {i}") for i in range(8)]
+orig_search, sch.search = sch.search, lambda q, limit=8: (many, True)
+f.login(223); r = f.on_text(223, "gymnasium")
+check("many matches: numbered list, 8 buttons in rows of 4, and a hint to narrow", len(buttons(r)) == 8 and len(r.buttons) == 2
+      and "more matches" in r.text and "School 7" in r.text)
+def too_many(q, limit=8): raise sch.TooManyResults()
+sch.search = too_many
+check("a too-broad search asks for more of the name", "Too many schools" in f.on_text(223, "gymnasium").text)
+def unreachable(q, limit=8): raise sch.SchoolSearchError("down")
+sch.search = unreachable
+check("WebUntis being unreachable gives a friendly message", "couldn't reach" in f.on_text(223, "gymnasium").text)
+sch.search = orig_search
+f.cancel(223)
+auth._fails.clear()
+f.login(223)
+for _ in range(auth.SCHOOL_SEARCH_LIMIT):
+    f.on_text(223, "demo")
+check("school lookups are limited per person", "lot of searches" in f.on_text(223, "demo").text)
+f.cancel(223); auth._fails.clear()
+
 for i in range(5):
-    f.login(223, f"mallory{i}", "x")
-check("repeated failures are throttled", "Too many" in f.login(223, "anna", "demo").text)
+    guided(f, 223, username=f"mallory{i}", password="x")
+check("repeated failed logins are throttled", "Too many" in guided(f, 223, password="demo")[-1].text)
+auth._fails.clear()
 
 # ---- 7. search / show / delete / retry (reading faked) ------------------------------------------
 os.environ["OCR_PROVIDER"] = "gemini"; os.environ["GEMINI_API_KEY"] = "not-real"
@@ -256,9 +321,6 @@ check("a Kurs whose button data would exceed 64 bytes gets no button", tb._rows(
 check("list_materials with an empty owner returns nothing, not everyone's", materials.list_materials(owner="") == [])
 check("a non-ASCII digit after /invite does not crash", "Invite for up to 25" in f.invite(111, "²").text)
 check("/show and /delete with a non-ASCII digit do not crash", "Which one" in f.show(222, "²").text and "Which one" in f.delete(222, "²").text)
-check("the password is everything after the username, spaces kept", tb.login_args("/login anna  pa ss  word ") == ["anna", "pa ss  word "]
-      and tb.login_args("/login@testbot anna x") == ["anna", "x"] and tb.login_args("/login") == [])
-
 g = tb.Flow()
 g.start(950, auth.create_invite(5))
 r = g.on_files(950, [(png((i, 0, 0)), f"p{i}.png") for i in range(25)])
@@ -288,13 +350,15 @@ check("/link and /login have handlers", {"link", "login"} <= {c for h in app_.ha
 # an unexpected error from the Untis library: generic message, nothing about the password or the error
 import app.untis.real as real                               # noqa: E402
 class Boom:
-    def __init__(self, username, password): pass
+    def __init__(self, username, password, server=None, school=None): pass
     def identity(self): raise ValueError("secret-hunter2 details")
     def close(self): pass
 real_cls, real.RealUntisProvider = real.RealUntisProvider, Boom
+fb = tb.Flow()
+fb.login(222); fb.on_text(222, "demo"); fb.on_choice(222, "school:0"); fb.on_text(222, "anna")
 os.environ["UNTIS_PROVIDER"] = "real"
 try:
-    msg = tb.Flow().login(222, "anna", "secret-hunter2").text
+    msg = fb.on_text(222, "secret-hunter2").text
 finally:
     real.RealUntisProvider, os.environ["UNTIS_PROVIDER"] = real_cls, "mock"
 check("an unexpected Untis error gives a generic reply that leaks nothing", "right now" in msg and "hunter2" not in msg and "details" not in msg)

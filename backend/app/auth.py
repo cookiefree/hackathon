@@ -38,8 +38,13 @@ _lock = threading.Lock()
 USER_FAIL_LIMIT = 20       # per username: high, so someone else's guesses cannot easily lock you out
 
 
+SCHOOL_SEARCH_LIMIT = 20   # school lookups per person per 15 minutes
+
+
 def _limit(key: str) -> int:
-    return USER_FAIL_LIMIT if key.startswith("user:") else FAIL_LIMIT
+    if key.startswith("user:"):
+        return USER_FAIL_LIMIT
+    return SCHOOL_SEARCH_LIMIT if key.startswith("schoolsearch:") else FAIL_LIMIT
 
 
 def _prune(key: str) -> list[float]:
@@ -74,8 +79,10 @@ def mode() -> str:
     return config.get("UNTIS_PROVIDER", "")
 
 
-def _fetch_from_untis(username: str, password: str) -> tuple[str, list, list]:
-    """Check the credentials with Untis and fetch this person's data. Returns (user key, lessons, homework)."""
+def _fetch_from_untis(username: str, password: str, school=None) -> tuple[str, list, list]:
+    """Check the credentials with Untis and fetch this person's data. Returns (user key, lessons, homework).
+
+    `school` is a schools.School chosen from the WebUntis search; without it the school in .env is used."""
     today = date.today()
     monday = today - timedelta(days=today.weekday())
     t_start, t_end = monday - timedelta(days=7), monday + timedelta(days=27)
@@ -92,8 +99,12 @@ def _fetch_from_untis(username: str, password: str) -> tuple[str, list, list]:
         raise AuthError("Login is not configured on this server.", 503)
 
     import webuntis
+    from app.untis import schools
     from app.untis.real import RealUntisProvider
-    p = RealUntisProvider(username, password)
+    if school is not None and not schools.valid_server(school.server):
+        raise AuthError("That school's server is not supported.", 400)
+    p = RealUntisProvider(username, password, server=school.server if school else None,
+                          school=school.login_name if school else None)
     try:
         person_id, person_type = p.identity()
         lessons, homework = p.timetable(t_start, t_end), p.homework(h_start, h_end)
@@ -176,6 +187,26 @@ def _store_user_data(user_key: str, lessons: list, homework: list) -> None:
                         (user_key, name, json.dumps([i.model_dump(mode="json") for i in items]), now))
 
 
+def _store_json(user_key: str, name: str, value) -> None:
+    with connect() as con:
+        con.execute("INSERT OR REPLACE INTO user_data (user_key, name, json, fetched) VALUES (?,?,?,?)",
+                    (user_key, name, json.dumps(value), datetime.now().isoformat(timespec="seconds")))
+
+
+def school_of(user_key: str) -> dict | None:
+    data, _ = user_data(user_key, "school")
+    return data if isinstance(data, dict) else None
+
+
+def school_search_allowed(telegram_id: int) -> bool:
+    """Each school lookup costs a request to WebUntis, so cap them per person."""
+    keys = [f"schoolsearch:{telegram_id}"]
+    if _blocked(keys):
+        return False
+    _record_failure(keys)
+    return True
+
+
 def current_user(request: Request) -> str:
     """FastAPI dependency: the logged-in user's key, or 401."""
     token = request.cookies.get(COOKIE)
@@ -196,7 +227,8 @@ def logout(request: Request, response: Response) -> None:
     response.delete_cookie(COOKIE)
 
 
-def user_data(user_key: str, name: str) -> tuple[list[dict], str | None]:
+def user_data(user_key: str, name: str):
+    """(stored value, when it was fetched). The value is a list for timetable and homework, a dict for school."""
     with connect() as con:
         row = con.execute("SELECT json, fetched FROM user_data WHERE user_key=? AND name=?",
                           (user_key, name)).fetchone()
@@ -343,23 +375,27 @@ def list_invites() -> list[dict]:
                  active=not r["revoked"] and r["uses"] < r["max_uses"] and r["expires"] > now) for r in rows]
 
 
-def telegram_login(telegram_id: int, owner: str, username: str, password: str) -> tuple[int, int]:
+def telegram_login(telegram_id: int, owner: str, username: str, password: str, school=None) -> tuple[int, int]:
     """Check a school login for a Telegram user and cache their timetable and homework under `owner`.
 
     Same rules as the website: the password goes to WebUntis once and is never kept; failed attempts
-    are rate-limited. Returns (number of Kurse, number of open homework items).
+    are rate-limited. `school` is the school they picked. Returns (number of Kurse, open homework items).
     """
     username = username.strip()
     if not username or not password:
-        raise AuthError("Send /login followed by your username and password.", 400)
-    keys = [f"tg:{telegram_id}", "user:" + hashlib.sha256(username.lower().encode()).hexdigest()]
+        raise AuthError("I need both a username and a password.", 400)
+    school_id = school.login_name if school else config.get("UNTIS_SCHOOL")
+    keys = [f"tg:{telegram_id}", "user:" + hashlib.sha256(f"{school_id}|{username.lower()}".encode()).hexdigest()]
     if _blocked(keys):
         raise AuthError("Too many failed attempts. Wait 15 minutes.", 429)
     try:
-        _, lessons, homework = _fetch_from_untis(username, password)
+        _, lessons, homework = _fetch_from_untis(username, password, school)
     except AuthError as e:
         if e.status == 401:
             _record_failure(keys)
         raise
     _store_user_data(owner, lessons, homework)
+    _store_json(owner, "school", {"name": school.name if school else school_id,
+                                  "server": school.server if school else config.get("UNTIS_SERVER"),
+                                  "school": school_id})
     return len(kurse_of(owner)), sum(1 for h in homework if not h.completed)

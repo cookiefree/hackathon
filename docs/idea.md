@@ -23,7 +23,7 @@ A loop: **send in -> file -> read -> find, ask, prepare -> revise**, tied to the
 6. **Link to the timetable (not built yet):** when Untis homework says "S. 84 Nr. 3", show the matching page from your materials.
 
 ## What is built today
-- **A Telegram bot as the product.** Join with an invite link, optionally connect a school (WebUntis) account with `/login`, then upload photos and use `/week`, `/homework`, `/search`, `/show`, `/delete`.
+- **A Telegram bot as the product.** Join with an invite link, optionally connect a school (WebUntis) account with `/login` (it asks for the school, so any WebUntis school works, then the username and the password), then upload photos and use `/week`, `/homework`, `/search`, `/show`, `/delete`.
 - Per-user accounts: every person sees only their own uploads, schedule and homework.
 - An optional website (login with the school account, upload, search) for use on one machine.
 - Photo reading with Gemini (opt-in), a background worker, retry on failure, and search over the text.
@@ -39,7 +39,7 @@ See the README for details and limits.
 ## Architecture (short)
 - **Backend:** Python and FastAPI. SQLite with full-text search. Photos on disk.
 - **Untis:** python-webuntis plus the raw homework endpoint, behind a provider interface with a mock for demos.
-- **Accounts:** in Telegram, an invite link creates the account (`tg:<telegram id>`), and `/login` adds the school data. On the website, login is a check against WebUntis. Passwords are used once and never stored; web sessions are random tokens stored hashed.
+- **Accounts:** in Telegram, an invite link creates the account (`tg:<telegram id>`), and `/login` adds the school data for whichever school the person picks. On the website, login is a check against the school set in `.env`. Passwords are used once and never stored; web sessions are random tokens stored hashed.
 - **Photo reading:** Gemini API, called from a background worker, one photo at a time.
 - **LLM for answers:** behind one interface (`LLMClient`). Only a stub exists. Candidates are Gemini, Claude, or a local model through llama.cpp.
 - **Interfaces:** the Telegram bot (main) and the web page (optional), both calling the same backend code. The bot connects outward to Telegram, so nothing needs to be reachable from the internet.

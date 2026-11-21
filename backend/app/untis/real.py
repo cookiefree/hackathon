@@ -23,10 +23,11 @@ def _at(day: date, hhmm: int) -> datetime:
 class RealUntisProvider(UntisProvider):
     """WebUntis via python-webuntis (timetable, exams) plus the raw REST API (homework)."""
 
-    def __init__(self, username: str | None = None, password: str | None = None) -> None:
-        """Credentials default to the ones in .env; the login flow passes a visitor's own."""
-        self.server = config.get("UNTIS_SERVER")
-        self.school = config.get("UNTIS_SCHOOL")
+    def __init__(self, username: str | None = None, password: str | None = None,
+                 server: str | None = None, school: str | None = None) -> None:
+        """Everything defaults to the .env values; the login flows pass a visitor's own school and credentials."""
+        self.server = server or config.get("UNTIS_SERVER")
+        self.school = school or config.get("UNTIS_SCHOOL")
         self._session = webuntis.Session(
             server=self.server,
             school=self.school,

@@ -19,6 +19,7 @@ from datetime import date, timedelta
 
 from app import auth, config, notify, ocr
 from app.auth import admin_ids as allowed_users          # ALLOWED_USERS = the admins
+from app.untis import schools
 from app.materials import (KINDS, KURS_RE, UploadError, delete_material, list_materials, material_text,
                            recent_kurse, request_reread, save_upload, search_materials)
 
@@ -35,20 +36,18 @@ HELP = (
     "read the text, and keep them searchable. Only you can see your uploads.\n\n"
     "Tip: send exams as a File (paperclip > File), not as a Photo. Telegram squashes photos "
     "and the text gets hard to read.\n\n"
-    "Your school account is optional but useful: /login gives you your own Kurs buttons, /week and /homework.\n\n"
+    "Your school account is optional but useful: /login gives you your own Kurs buttons, /week and /homework, for any school on WebUntis.\n\n"
     "Type / to see all commands."
 )
 WELCOME = ("You're in. Send me a photo to get started.\n\n"
            "For your schedule and homework, connect your school account with /login. "
            "Without it you can still upload, you just type the Kurs yourself.\n\nType / to see all commands.")
 INVITE_ONLY = "This bot is invite-only. Ask whoever runs it for an invite link, then open the link."
-LOGIN_USAGE = (
-    "Send: /login username password\n\n"
-    "I check it once with WebUntis, never store the password, and delete your message. "
-    "Telegram itself still sees what you type, so only do this if you're okay with that.\n\n"
-    "It gives you /week, /today, /homework and Kurs buttons from your own timetable."
+PASSWORD_PROMPT = (
+    "Now your WebUntis password. I check it once with WebUntis, never store it, and delete your message. "
+    "Telegram itself still sees what you type, so if you're not okay with that, send /cancel now."
 )
-NEEDS_LOGIN = "I don't have your schedule yet. Connect your school account first: /login username password"
+NEEDS_LOGIN = "I don't have your schedule yet. Connect your school account first with /login"
 
 # Shown in Telegram's "/" menu. (command, description)
 COMMANDS = [
@@ -60,7 +59,7 @@ COMMANDS = [
     ("show", "read the text of a photo, e.g. /show 12"),
     ("delete", "delete an upload, e.g. /delete 12"),
     ("retry", "read a photo's text again, e.g. /retry 12"),
-    ("login", "connect your school account: /login username password"),
+    ("login", "connect your school account (I ask for school, username, password)"),
     ("logout", "forget your schedule and homework"),
     ("cancel", "drop the photos I'm holding"),
     ("help", "what this bot does"),
@@ -81,8 +80,11 @@ class Reply:
 @dataclass
 class Session:
     pending: list[tuple[bytes, str]] = field(default_factory=list)       # (bytes, filename)
-    state: str | None = None                                             # None | "kurs" | "kind"
+    state: str | None = None          # None | kurs | kind | login_school | login_pick | login_user | login_pass
     kurs: str | None = None
+    schools: list = field(default_factory=list)                          # school search results to pick from
+    school: object | None = None                                         # the chosen schools.School
+    username: str | None = None
     touched: float = field(default_factory=time.time)
 
 
@@ -101,12 +103,6 @@ def _lesson_line(lesson) -> str:
 def _one_line(text: str, n: int) -> str:
     flat = " ".join(text.split())
     return flat if len(flat) <= n else flat[: n - 1] + "…"
-
-
-def login_args(text: str) -> list[str]:
-    """['/login', user, rest-of-line] -> [user, rest]. The password is everything after the username,
-    exactly as typed (ctx.args would collapse repeated spaces)."""
-    return (text or "").split(None, 2)[1:]
 
 
 class Flow:
@@ -149,17 +145,70 @@ class Flow:
     # --- school account -----------------------------------------------------------------------
 
     def login(self, uid: int, *args: str) -> Reply:
+        """Start the guided login: school, then username, then password, one message each."""
+        if self.resolve(uid) is None:
+            return self.refuse(uid)
+        if args:       # someone typed their details after the command: they are in the chat now, so say so
+            return Reply("Please send /login on its own, with nothing after it. I'll ask for your school, "
+                         "username and password one by one, and delete your messages.")
+        with self._lock:
+            s = self._s(uid)
+            if s.pending:
+                return Reply("You have photos waiting. Finish them (or send /cancel) before logging in.")
+            s.state, s.schools, s.school, s.username = "login_school", [], None, None
+        return Reply("Which school? Type its name, for example 'Hulda Pankok'. (/cancel to stop)")
+
+    def sensitive(self, uid: int) -> bool:
+        """True while the next message from this person is a username or password, so it must be deleted."""
+        with self._lock:
+            s = self.sessions.get(uid)
+            return bool(s and s.state in ("login_user", "login_pass") and time.time() - s.touched <= SESSION_IDLE)
+
+    def _login_search(self, uid: int, text: str) -> Reply:
+        query = text.strip()
+        if len(query) < 2:
+            return Reply("Type at least two letters of the school's name.")
+        if not auth.school_search_allowed(uid):
+            return Reply("That's a lot of searches. Wait a few minutes, or /cancel.")
+        try:
+            found, more = schools.search(query)
+        except schools.TooManyResults:
+            return Reply("Too many schools match that. Add more of the name or the city, e.g. 'Gymnasium Köln'.")
+        except schools.SchoolSearchError:
+            return Reply("I couldn't reach WebUntis to look up schools. Try again in a moment, or /cancel.")
+        if not found:
+            return Reply(f"No school found for '{query}'. Try another spelling, or /cancel.")
+        with self._lock:
+            s = self._s(uid)
+            s.schools, s.state = found, "login_pick"
+        lines = [f"{i + 1}. {x.name}" + (f", {x.address}" if x.address else "") for i, x in enumerate(found)]
+        tail = "\n\nThere are more matches. Type a more specific name to narrow it down." if more else ""
+        buttons = [[(str(i + 1), f"school:{i}") for i in range(len(found))][j:j + 4] for j in range(0, len(found), 4)]
+        return Reply("Which one is yours? Tap its number, or type another name to search again.\n\n"
+                     + "\n".join(lines) + tail, buttons)
+
+    def _login_username(self, uid: int, text: str) -> Reply:
+        username = text.strip()
+        if not username or len(username) > 100:
+            return Reply("That doesn't look like a username. Send your WebUntis username, or /cancel.")
+        with self._lock:
+            s = self._s(uid)
+            s.username, s.state = username, "login_pass"
+        return Reply(PASSWORD_PROMPT)
+
+    def _login_password(self, uid: int, text: str) -> Reply:
+        with self._lock:
+            s = self.sessions.pop(uid, None)          # nothing about the login is kept after this
+        if s is None or s.school is None or not s.username:
+            return Reply("The login timed out. Send /login to start again.")
         owner = self.resolve(uid)
         if owner is None:
             return self.refuse(uid)
-        if not args:
-            return Reply(LOGIN_USAGE)
-        username, password = args[0], " ".join(args[1:])
         try:
-            kurse, open_hw = auth.telegram_login(uid, owner, username, password)
+            kurse, open_hw = auth.telegram_login(uid, owner, s.username, text.rstrip("\r\n"), s.school)
         except auth.AuthError as e:
-            return Reply(str(e))
-        return Reply(f"Logged in. Found {kurse} Kurse and {open_hw} open homework items. "
+            return Reply(f"{e}\nSend /login to try again.")
+        return Reply(f"Logged in at {s.school.name}. Found {kurse} Kurse and {open_hw} open homework items. "
                      "Try /week and /homework. I did not keep your password.")
 
     def link(self, uid: int, *args: str) -> Reply:
@@ -256,6 +305,8 @@ class Flow:
     def on_files(self, uid: int, items: list[tuple[bytes, str]]) -> Reply:
         with self._lock:
             s = self._s(uid)
+            if s.state and s.state.startswith("login"):
+                return Reply("You're in the middle of logging in. Finish it, or send /cancel, before sending photos.")
             held = sum(len(b) for b, _ in s.pending)
             take = []
             for data, name in items:
@@ -276,6 +327,14 @@ class Flow:
 
     def on_text(self, uid: int, text: str) -> Reply:
         with self._lock:
+            state = self._s(uid).state
+        if state in ("login_school", "login_pick"):
+            return self._login_search(uid, text)
+        if state == "login_user":
+            return self._login_username(uid, text)
+        if state == "login_pass":
+            return self._login_password(uid, text)
+        with self._lock:
             s = self._s(uid)
             if s.state != "kurs":
                 return Reply("Send me a photo to start. Type / to see the commands.")
@@ -294,6 +353,9 @@ class Flow:
         key, _, value = data.partition(":")
         with self._lock:
             s = self._s(uid)
+            if key == "school" and s.state == "login_pick" and value.isdecimal() and int(value) < len(s.schools):
+                s.school, s.state = s.schools[int(value)], "login_user"
+                return Reply(f"{s.school.name}. What's your username there?")
             if key == "kurs" and s.state == "kurs" and KURS_RE.match(value):
                 return self._ask_kind(uid, value)
             ready = key == "kind" and s.state == "kind" and value in KINDS and bool(s.kurs)
@@ -478,7 +540,7 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
         async def handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             uid, msg = update.effective_user.id, update.effective_message
             flow.bot_username = ctx.bot.username
-            args = login_args(msg.text) if name == "login" else list(ctx.args or [])
+            args = list(ctx.args or [])
             warning = ""
             if secret and args:                         # the message carries a password or a code
                 try:
@@ -540,10 +602,21 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
             await _send(msg, await asyncio.to_thread(flow.on_files, uid, items))
 
     async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
+        uid, msg = update.effective_user.id, update.effective_message
         if await asyncio.to_thread(flow.resolve, uid) is None:
             return await refuse(update)
-        await _send(update.effective_message, await asyncio.to_thread(flow.on_text, uid, update.effective_message.text))
+        hide = await asyncio.to_thread(flow.sensitive, uid)       # the next message is a username or password
+        warning = ""
+        if hide:
+            try:
+                await msg.delete()
+            except Exception:
+                warning = ("\n\nI couldn't delete your message, so it is still visible in this chat. "
+                           "Please delete it yourself.")
+        reply = await asyncio.to_thread(flow.on_text, uid, msg.text)
+        if warning:
+            reply = Reply(reply.text + warning, reply.buttons)
+        await _send(_ChatSender(ctx.bot, update.effective_chat.id) if hide else msg, reply)
 
     async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query

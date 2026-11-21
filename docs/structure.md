@@ -27,7 +27,8 @@ hackathon/
 │   │   ├── telegram_bot.py       the bot: conversation and commands (Flow) plus python-telegram-bot handlers
 │   │   ├── untis/
 │   │   │   ├── base.py           UntisProvider interface
-│   │   │   ├── real.py           python-webuntis plus raw REST for homework
+│   │   │   ├── schools.py        WebUntis school search for the Telegram login (any school)
+│   │   │   ├── real.py           python-webuntis plus raw REST for homework, for a given school
 │   │   │   ├── mock.py           fixture-backed demo data
 │   │   │   └── fixtures/sample.json
 │   │   ├── ocr/
@@ -62,7 +63,7 @@ hackathon/
 - **Ownership:** every materials query filters by the logged-in user's key. Another user's file returns 404.
 - **Telegram access:** invite-only. `owner_for_telegram` gives a person an account, in this order: a linked website account (`/link CODE`, a one-time 10-minute code from the website); else `tg:<telegram id>` if they joined; else admins (`ALLOWED_USERS`) join automatically; else nobody. The bot ignores groups and channels.
 - **Invites:** `/invite` creates a code (default 25 uses, 14 days), shared as `https://t.me/<bot>?start=CODE`. Redeeming is one atomic update, so the use limit cannot be exceeded; revoked, used-up and expired codes are refused. Only admins can create, list or revoke.
-- **`/login` in Telegram:** same check and same throttling as the website, but stored under the person's own account key. The bot deletes the message first. If deleting fails it says so and asks the user to delete it. The password is never stored or logged; handler errors log only the exception type.
+- **`/login` in Telegram** is a guided conversation: school, then username, then password, one message each (`Flow` states `login_school`, `login_pick`, `login_user`, `login_pass`). The school comes from WebUntis's public search (`untis/schools.py`), shown as numbered matches. A server name only ever comes from that answer and must be `<name>.webuntis.com`, so nobody can point the server at an address of their choosing. Username and password messages are deleted by the bot before they are processed (if deleting fails it says so), the session holding the username is dropped as soon as the login is checked, and the password is never stored or logged. Same check and throttling as the website; data is stored under the person's own account key together with the chosen school. A `/login` with details typed after it is refused. Handler errors log only the exception type.
 - **Throttling:** 5 failures per 15 minutes per source (IP for the website, Telegram ID for the bot) and 20 per username, so one person's guesses cannot lock a classmate out. Link-code guessing is throttled per Telegram ID. Empty entries are pruned.
 - **Abuse limits:** 20 photos or 80 MB held per person while answering the Kurs question (dropped after 30 idle minutes), 500 uploads per person, Kurs names must start with a letter or digit and are checked to stay inside the vault folder.
 - **Logs:** the HTTP libraries are set to WARNING, because Telegram request URLs contain the bot token.
@@ -74,7 +75,7 @@ hackathon/
 | `materials` | one row per photo: `owner`, `visibility` (private or kurs, only private used), `kurs`, `kind`, `title`, `filename`, `path`, `sha256`, `ocr_text`, `ocr_status` (off, pending, done, failed), `created`. Unique per (owner, kurs, sha256). |
 | `materials_fts` | FTS5 index over title and text; its rowid is the material id |
 | `sessions` | `token_hash`, `user_key`, `created`, `expires` |
-| `user_data` | `user_key`, `name` (timetable or homework), `json`, `fetched` |
+| `user_data` | `user_key`, `name` (timetable, homework, or school), `json`, `fetched` |
 | `link_codes` | one-time codes to connect a Telegram account to a website account |
 | `telegram_links` | `telegram_id` to `user_key` |
 | `telegram_users` | people who joined the bot (`telegram_id`, `joined`, `via` = the invite code or `admin`) |
@@ -151,7 +152,7 @@ Uploads accept JPEG, PNG and WebP up to 15 MB, checked from the file's bytes, no
 |---|---|---|
 | `/start CODE` | anyone | join with an invite; already-joined users get the help text |
 | `/whoami` | anyone | shows the Telegram ID (used to set up admins) |
-| `/login user password`, `/logout` | joined | connect or forget the school account (schedule, homework, Kurs buttons) |
+| `/login`, `/logout` | joined | `/login` asks for school, username and password in turn, to load the person's timetable and homework (and Kurs buttons); `/logout` forgets them |
 | `/week [next]`, `/today`, `/homework` | joined, after `/login` | the person's own cached Untis data |
 | *send a photo or an album* | joined | asks for the Kurs (buttons, or type it) and kind, then files them |
 | `/search words`, `/list`, `/show N`, `/delete N`, `/retry N` | joined | work on the person's own uploads |
