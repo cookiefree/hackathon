@@ -1,3 +1,6 @@
+import logging
+import time
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -10,11 +13,34 @@ from app.crosscheck import cross_check
 from app.llm import get_llm
 from app.materials import MAX_BYTES, Material, UploadError, file_path, list_materials, save_upload
 from app.models import Analysis
+from app.telegram_bot import start_bot, stop_bot
 from app.untis import get_provider
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s: %(message)s")
 
 WEB = Path(__file__).resolve().parents[2] / "web"
 
-app = FastAPI(title="School second brain")
+_kurse_cache: tuple[float, list[str]] = (0.0, [])
+
+
+def kurs_suggestions() -> list[str]:
+    """Course codes from this and next week's timetable, cached for 10 minutes."""
+    global _kurse_cache
+    if time.time() - _kurse_cache[0] > 600:
+        start, end = _week(0)
+        codes = {l.subject for l in untis.timetable(start, end + timedelta(days=7))}
+        _kurse_cache = (time.time(), sorted(codes))
+    return _kurse_cache[1]
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    bot = await start_bot(kurs_suggestions)
+    yield
+    await stop_bot(bot)
+
+
+app = FastAPI(title="School second brain", lifespan=lifespan)
 untis = get_provider()
 llm = get_llm()
 

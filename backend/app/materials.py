@@ -28,6 +28,8 @@ class UploadError(ValueError):
 
 class Material(BaseModel):
     id: int
+    owner: str
+    visibility: str
     kurs: str
     kind: str
     title: str
@@ -50,12 +52,13 @@ def sniff_ext(data: bytes) -> str | None:
 
 
 def _material(row, duplicate: bool = False) -> Material:
-    return Material(id=row["id"], kurs=row["kurs"], kind=row["kind"], title=row["title"],
+    return Material(id=row["id"], owner=row["owner"], visibility=row["visibility"], kurs=row["kurs"], kind=row["kind"], title=row["title"],
                     filename=row["filename"], sha256=row["sha256"],
                     has_text=bool(row["ocr_text"]), created=row["created"], duplicate=duplicate)
 
 
-def save_upload(data: bytes, filename: str, kurs: str, kind: str, title: str = "") -> Material:
+def save_upload(data: bytes, filename: str, kurs: str, kind: str, title: str = "",
+                owner: str = "local") -> Material:
     kurs = kurs.strip()
     if not KURS_RE.match(kurs):
         raise UploadError("Kurs must be 1-40 letters, digits, space, '.', '-' or '_'.")
@@ -71,7 +74,7 @@ def save_upload(data: bytes, filename: str, kurs: str, kind: str, title: str = "
 
     sha = hashlib.sha256(data).hexdigest()
     with connect() as con:
-        existing = con.execute("SELECT * FROM materials WHERE kurs=? AND sha256=?", (kurs, sha)).fetchone()
+        existing = con.execute("SELECT * FROM materials WHERE owner=? AND kurs=? AND sha256=?", (owner, kurs, sha)).fetchone()
         if existing:
             return _material(existing, duplicate=True)
 
@@ -84,8 +87,8 @@ def save_upload(data: bytes, filename: str, kurs: str, kind: str, title: str = "
         created = datetime.now().isoformat(timespec="seconds")
         safe_name = Path(filename).name[:120] or f"photo{ext}"
         cur = con.execute(
-            "INSERT INTO materials (kurs, kind, title, filename, path, sha256, ocr_text, created) "
-            "VALUES (?,?,?,?,?,?,?,?)", (kurs, kind, title.strip()[:200], safe_name, rel, sha, text, created))
+            "INSERT INTO materials (owner, kurs, kind, title, filename, path, sha256, ocr_text, created) "
+            "VALUES (?,?,?,?,?,?,?,?,?)", (owner, kurs, kind, title.strip()[:200], safe_name, rel, sha, text, created))
         mid = cur.lastrowid
         con.execute("INSERT INTO materials_fts (rowid, title, ocr_text) VALUES (?,?,?)",
                     (mid, title.strip()[:200], text))
@@ -108,20 +111,33 @@ def write_vault_note(row) -> Path:
     note = kurs_dir / f"{day} {row['kind']} {row['id']}.md"
     text = row["ocr_text"] or "_Text not read yet._"
     note.write_text(
-        f"---\nid: {row['id']}\nkurs: {row['kurs']}\nkind: {row['kind']}\n"
+        f"---\nid: {row['id']}\nowner: {row['owner']}\nkurs: {row['kurs']}\nkind: {row['kind']}\n"
         f"uploaded: {row['created']}\nsha256: {row['sha256']}\n---\n"
         f"# {row['title'] or row['filename']}\n\n![[{src.name}]]\n\n## Text\n{text}\n",
         encoding="utf-8")
     return note
 
 
-def list_materials(kurs: str | None = None) -> list[Material]:
+def list_materials(kurs: str | None = None, owner: str | None = None, limit: int | None = None) -> list[Material]:
+    where, args = [], []
+    if kurs:
+        where.append("kurs=?"); args.append(kurs)
+    if owner:
+        where.append("owner=?"); args.append(owner)
+    sql = "SELECT * FROM materials" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
     with connect() as con:
-        if kurs:
-            rows = con.execute("SELECT * FROM materials WHERE kurs=? ORDER BY id DESC", (kurs,)).fetchall()
-        else:
-            rows = con.execute("SELECT * FROM materials ORDER BY id DESC").fetchall()
+        rows = con.execute(sql, args).fetchall()
     return [_material(r) for r in rows]
+
+
+def recent_kurse(owner: str, limit: int = 6) -> list[str]:
+    """This owner's most recently used Kurse, newest first."""
+    with connect() as con:
+        rows = con.execute("SELECT kurs FROM materials WHERE owner=? GROUP BY kurs "
+                           "ORDER BY MAX(id) DESC LIMIT ?", (owner, limit)).fetchall()
+    return [r["kurs"] for r in rows]
 
 
 def file_path(material_id: int) -> Path | None:
