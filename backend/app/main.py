@@ -12,7 +12,9 @@ from app.agent.agent import extract_note
 from app.auth import current_user
 from app.crosscheck import cross_check
 from app.llm import get_llm
-from app.materials import MAX_BYTES, Material, UploadError, file_owner_path, list_materials, save_upload
+from app.materials import (MAX_BYTES, Material, UploadError, file_owner_path, list_materials, request_reread,
+                           save_upload, search_materials)
+from app.ocr import worker as ocr_worker
 from app.models import Analysis, Homework, Lesson
 from app.telegram_bot import start_bot, stop_bot
 
@@ -24,6 +26,9 @@ llm = get_llm()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    queued = ocr_worker.enqueue_backlog()
+    if queued:
+        logging.getLogger(__name__).info("Reading %d photo(s) that were not read yet.", queued)
     bot = await start_bot()
     yield
     await stop_bot(bot)
@@ -114,6 +119,18 @@ def upload_material(file: UploadFile = File(...), kurs: str = Form(...), kind: s
 @app.get("/api/materials", response_model=list[Material])
 def materials(kurs: str | None = None, user: str = Depends(current_user)):
     return list_materials(kurs, owner=user)
+
+
+@app.get("/api/search", response_model=list[Material])
+def search(q: str, user: str = Depends(current_user)):
+    return search_materials(q, owner=user)
+
+
+@app.post("/api/materials/{material_id}/reread")
+def reread(material_id: int, user: str = Depends(current_user)):
+    if not request_reread(material_id, user):
+        raise HTTPException(status_code=404, detail="Nothing to re-read (no such material, or reading is switched off).")
+    return {"ok": True}
 
 
 @app.get("/api/materials/{material_id}/file")

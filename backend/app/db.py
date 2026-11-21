@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS materials (
     path       TEXT NOT NULL,                    -- stored file, relative to DATA_DIR
     sha256     TEXT NOT NULL,
     ocr_text   TEXT NOT NULL DEFAULT '',
+    ocr_status TEXT NOT NULL DEFAULT 'off',      -- off | pending | done | failed
     created    TEXT NOT NULL,
     UNIQUE (owner, kurs, sha256)
 );
@@ -49,6 +50,9 @@ def _migrate(con: sqlite3.Connection) -> None:
             "INSERT INTO materials (id, kurs, kind, title, filename, path, sha256, ocr_text, created) "
             "SELECT id, kurs, kind, title, filename, path, sha256, ocr_text, created FROM materials_old;"
             "DROP TABLE materials_old;")
+        cols = [r["name"] for r in con.execute("PRAGMA table_info(materials)")]
+    if cols and "ocr_status" not in cols:
+        con.execute("ALTER TABLE materials ADD COLUMN ocr_status TEXT NOT NULL DEFAULT 'off'")
 
 
 def connect() -> sqlite3.Connection:

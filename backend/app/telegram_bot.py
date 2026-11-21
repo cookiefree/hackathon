@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from app import auth, config
+from app import auth, config, ocr
 from app.materials import KINDS, KURS_RE, UploadError, list_materials, recent_kurse, save_upload
 
 log = logging.getLogger(__name__)
@@ -158,6 +158,8 @@ class Flow:
             parts.append(f"{dup} already uploaded.")
         if errors:
             parts.append("Problems:\n" + "\n".join(errors))
+        if saved and ocr.enabled():
+            parts.append("I'm reading the text in the background.")
         return Reply(" ".join(parts) if parts else "Nothing to save.")
 
     def cancel(self, uid: int) -> Reply:

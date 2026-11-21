@@ -63,6 +63,12 @@
   .top button { background:none; border:1px solid #333; color:var(--fg); font:inherit; font-size:12px; padding:1px 8px; cursor:pointer; }
   .top button:hover { border-color:var(--magenta); color:var(--magenta); }
   .linkcode { color:var(--amber); }
+  .snip { color:var(--fg); font-size:12px; margin-top:2px; max-width:900px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .st-pending { color:var(--amber); } .st-failed { color:var(--red); } .st-done { color:var(--green); }
+  .mat .retry { background:none; border:1px solid #333; color:var(--fg); font:inherit; font-size:11px; padding:0 6px; cursor:pointer; }
+  .search { display:flex; gap:8px; margin:14px 0 6px; }
+  .search input { flex:1; background:#0f0f0f; color:var(--fg); border:1px solid #333; font:inherit; padding:3px 8px; }
+  .search input:focus { outline:none; border-color:var(--magenta); }
   @media (max-width:900px){ .grid{grid-template-columns:1fr;} }
 </style>
 </head>
@@ -106,6 +112,7 @@
     <button class="run" id="up" style="margin-top:0">upload</button>
     <span id="ustatus" class="dim"></span>
   </div>
+  <div class="search"><input type="text" id="q" placeholder="search the text of your materials..."> <button class="run" id="qBtn" style="margin-top:0">search</button> <button class="run" id="qClear" style="margin-top:0" hidden>clear</button></div>
   <div id="mats"></div>
 </div>
 
@@ -154,14 +161,49 @@ $("prev").onclick = () => { week--; loadTimetable(); };
 $("next").onclick = () => { week++; loadTimetable(); };
 $("today").onclick = () => { week = 0; loadTimetable(); };
 
-async function loadMaterials() {
-  const ms = await (await fetch("/api/materials")).json();
-  $("mats").innerHTML = ms.map(m => `
+const STATUS = {
+  pending: ['<span class="st-pending">reading text...</span>', ""],
+  done: ['<span class="st-done">text read</span>', ""],
+  failed: ['<span class="st-failed">reading failed</span>', "retry"],
+  off: ['<span class="dim">text not read (reading is off)</span>', ""],
+};
+let pollTimer = null;
+function renderMaterials(ms, empty) {
+  $("mats").innerHTML = ms.map(m => {
+    const [label, action] = STATUS[m.ocr_status] || STATUS.off;
+    const state = m.ocr_status === "done" && !m.has_text ? '<span class="dim">no text found</span>' : label;
+    return `
     <div class="mat"><img src="/api/materials/${m.id}/file" alt="">
     <div><span class="ok">#${m.id}</span> ${esc(m.kind)} <span class="dim">${esc(m.kurs)} · ${esc(m.created.slice(0,10))}</span>
-    <div class="dim">${esc(m.title || m.filename)}${m.has_text ? "" : " · text not read yet"}</div></div></div>`).join("")
-    || `<span class="dim">no uploads yet</span>`;
+    <div class="dim">${esc(m.title || m.filename)} · ${state}${action ? ` <button class="retry" data-id="${m.id}">${action}</button>` : ""}</div>
+    ${m.snippet ? `<div class="snip">${esc(m.snippet)}</div>` : ""}</div></div>`;
+  }).join("") || `<span class="dim">${empty}</span>`;
 }
+async function loadMaterials() {
+  clearTimeout(pollTimer);
+  const ms = await (await fetch("/api/materials")).json();
+  $("qClear").hidden = true;
+  renderMaterials(ms, "no uploads yet");
+  if (ms.some(m => m.ocr_status === "pending")) pollTimer = setTimeout(loadMaterials, 4000);
+}
+async function runSearch() {
+  const q = $("q").value.trim();
+  if (!q) return loadMaterials();
+  clearTimeout(pollTimer);
+  const r = await fetch("/api/search?q=" + encodeURIComponent(q));
+  if (!r.ok) return;
+  renderMaterials(await r.json(), "nothing found");
+  $("qClear").hidden = false;
+}
+$("qBtn").onclick = runSearch;
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") runSearch(); });
+$("qClear").onclick = () => { $("q").value = ""; loadMaterials(); };
+$("mats").addEventListener("click", async e => {
+  const b = e.target.closest(".retry");
+  if (!b) return;
+  await fetch(`/api/materials/${b.dataset.id}/reread`, { method: "POST" });
+  loadMaterials();
+});
 let picked = [];
 function renderThumbs() {
   $("thumbs").innerHTML = "";

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from app import config
 from app.db import DATA_DIR, connect
-from app.ocr import extract_text
+from app import ocr
 
 KINDS = {"exam", "worksheet", "book", "board", "notes"}
 MAX_BYTES = 15 * 1024 * 1024
@@ -36,6 +36,8 @@ class Material(BaseModel):
     filename: str
     sha256: str
     has_text: bool
+    ocr_status: str               # off | pending | done | failed
+    snippet: str = ""            # start of the extracted text, for lists
     created: str
     duplicate: bool = False       # true when this exact photo was already uploaded for the Kurs
 
@@ -54,7 +56,9 @@ def sniff_ext(data: bytes) -> str | None:
 def _material(row, duplicate: bool = False) -> Material:
     return Material(id=row["id"], owner=row["owner"], visibility=row["visibility"], kurs=row["kurs"], kind=row["kind"], title=row["title"],
                     filename=row["filename"], sha256=row["sha256"],
-                    has_text=bool(row["ocr_text"]), created=row["created"], duplicate=duplicate)
+                    has_text=bool(row["ocr_text"]), ocr_status=row["ocr_status"],
+                    snippet=" ".join(row["ocr_text"].split())[:160],
+                    created=row["created"], duplicate=duplicate)
 
 
 def save_upload(data: bytes, filename: str, kurs: str, kind: str, title: str = "",
@@ -83,19 +87,62 @@ def save_upload(data: bytes, filename: str, kurs: str, kind: str, title: str = "
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
 
-        text = extract_text(dest)
+        status = "pending" if ocr.enabled() else "off"
         created = datetime.now().isoformat(timespec="seconds")
         safe_name = Path(filename).name[:120] or f"photo{ext}"
         cur = con.execute(
-            "INSERT INTO materials (owner, kurs, kind, title, filename, path, sha256, ocr_text, created) "
-            "VALUES (?,?,?,?,?,?,?,?,?)", (owner, kurs, kind, title.strip()[:200], safe_name, rel, sha, text, created))
+            "INSERT INTO materials (owner, kurs, kind, title, filename, path, sha256, ocr_status, created) "
+            "VALUES (?,?,?,?,?,?,?,?,?)", (owner, kurs, kind, title.strip()[:200], safe_name, rel, sha, status, created))
         mid = cur.lastrowid
         con.execute("INSERT INTO materials_fts (rowid, title, ocr_text) VALUES (?,?,?)",
-                    (mid, title.strip()[:200], text))
+                    (mid, title.strip()[:200], ""))
         row = con.execute("SELECT * FROM materials WHERE id=?", (mid,)).fetchone()
 
     write_vault_note(row)
+    if status == "pending":
+        from app.ocr import worker
+        worker.enqueue(mid)
     return _material(row)
+
+
+def store_ocr_result(material_id: int, text: str, status: str) -> None:
+    """Called by the OCR worker: save the text, update search, refresh the Obsidian note."""
+    with connect() as con:
+        con.execute("UPDATE materials SET ocr_text=?, ocr_status=? WHERE id=?", (text, status, material_id))
+        con.execute("UPDATE materials_fts SET ocr_text=? WHERE rowid=?", (text, material_id))
+        row = con.execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
+    if row:
+        write_vault_note(row)
+
+
+def request_reread(material_id: int, owner: str) -> bool:
+    """Queue a photo for reading again (e.g. after a failure). Only its owner may."""
+    if not ocr.enabled():
+        return False
+    with connect() as con:
+        cur = con.execute("UPDATE materials SET ocr_status='pending' WHERE id=? AND owner=?", (material_id, owner))
+    if cur.rowcount == 0:
+        return False
+    from app.ocr import worker
+    worker.enqueue(material_id)
+    return True
+
+
+def _fts_query(q: str) -> str | None:
+    words = [w for w in "".join(c if c.isalnum() else " " for c in q).split() if w]
+    return " ".join(f'"{w}"*' for w in words[:8]) or None
+
+
+def search_materials(q: str, owner: str, limit: int = 20) -> list[Material]:
+    """Full-text search over the owner's own materials (title and extracted text)."""
+    query = _fts_query(q)
+    if not query:
+        return []
+    with connect() as con:
+        rows = con.execute(
+            "SELECT m.* FROM materials_fts f JOIN materials m ON m.id = f.rowid "
+            "WHERE materials_fts MATCH ? AND m.owner=? ORDER BY rank LIMIT ?", (query, owner, limit)).fetchall()
+    return [_material(r) for r in rows]
 
 
 def write_vault_note(row) -> Path:
