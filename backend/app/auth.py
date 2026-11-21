@@ -39,12 +39,14 @@ USER_FAIL_LIMIT = 20       # per username: high, so someone else's guesses canno
 
 
 SCHOOL_SEARCH_LIMIT = 20   # school lookups per person per 15 minutes
+VOCAB_BUILD_LIMIT = 10     # vocabulary pages read per person per 15 minutes (each one is a paid API call)
+_ACTION_LIMITS = {"schoolsearch": SCHOOL_SEARCH_LIMIT, "vocab": VOCAB_BUILD_LIMIT}
 
 
 def _limit(key: str) -> int:
     if key.startswith("user:"):
         return USER_FAIL_LIMIT
-    return SCHOOL_SEARCH_LIMIT if key.startswith("schoolsearch:") else FAIL_LIMIT
+    return _ACTION_LIMITS.get(key.split(":", 1)[0], FAIL_LIMIT)
 
 
 def _prune(key: str) -> list[float]:
@@ -198,13 +200,18 @@ def school_of(user_key: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def school_search_allowed(telegram_id: int) -> bool:
-    """Each school lookup costs a request to WebUntis, so cap them per person."""
-    keys = [f"schoolsearch:{telegram_id}"]
+def action_allowed(action: str, telegram_id: int) -> bool:
+    """Spend one unit of a per-person budget (see _ACTION_LIMITS). False once it is used up."""
+    keys = [f"{action}:{telegram_id}"]
     if _blocked(keys):
         return False
     _record_failure(keys)
     return True
+
+
+def school_search_allowed(telegram_id: int) -> bool:
+    """Each school lookup costs a request to WebUntis, so cap them per person."""
+    return action_allowed("schoolsearch", telegram_id)
 
 
 def current_user(request: Request) -> str:

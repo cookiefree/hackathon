@@ -14,7 +14,7 @@ from app import config
 from app.db import DATA_DIR, connect
 from app import notify, ocr
 
-KINDS = {"exam", "worksheet", "book", "board", "notes"}
+KINDS = {"exam", "worksheet", "book", "board", "notes", "vocab"}
 MAX_BYTES = 15 * 1024 * 1024
 KURS_RE = re.compile(r"^\w[\w.\- ]{0,39}$")      # must start with a letter or digit: no ".", no ".."
 VAULT = Path(config.get("VAULT_PATH", str(config.ROOT / "vault")))
@@ -220,6 +220,8 @@ def delete_material(material_id: int, owner: str) -> bool:
         row = con.execute("SELECT * FROM materials WHERE id=? AND owner=?", (material_id, owner)).fetchone()
         if row is None:
             return False
+        con.execute("DELETE FROM vocab_items WHERE set_id IN (SELECT id FROM vocab_sets WHERE material_id=?)", (material_id,))
+        con.execute("DELETE FROM vocab_sets WHERE material_id=?", (material_id,))
         con.execute("DELETE FROM materials WHERE id=?", (material_id,))
         con.execute("DELETE FROM materials_fts WHERE rowid=?", (material_id,))
         still_used = con.execute("SELECT 1 FROM materials WHERE sha256=? LIMIT 1", (row["sha256"],)).fetchone()

@@ -44,7 +44,17 @@ CREATE TABLE IF NOT EXISTS invites (           -- t.me/<bot>?start=<code>
     max_uses INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0
 );
 """
-SCHEMA = (MATERIALS_SQL + ACCOUNTS_SQL
+VOCAB_SQL = """
+CREATE TABLE IF NOT EXISTS vocab_sets (        -- word pairs read from one uploaded page
+    id INTEGER PRIMARY KEY, material_id INTEGER NOT NULL UNIQUE, owner TEXT NOT NULL,
+    lang_front TEXT NOT NULL DEFAULT '', lang_back TEXT NOT NULL DEFAULT '', created TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vocab_items (
+    id INTEGER PRIMARY KEY, set_id INTEGER NOT NULL, front TEXT NOT NULL, back TEXT NOT NULL,
+    correct INTEGER NOT NULL DEFAULT 0, missed INTEGER NOT NULL DEFAULT 0, last_seen TEXT
+);
+"""
+SCHEMA = (MATERIALS_SQL + ACCOUNTS_SQL + VOCAB_SQL
           + "CREATE VIRTUAL TABLE IF NOT EXISTS materials_fts USING fts5(title, ocr_text);")
 
 

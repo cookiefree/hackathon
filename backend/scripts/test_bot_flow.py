@@ -110,7 +110,7 @@ check("photo -> asks for the Kurs; no timetable yet so no buttons", "Which Kurs"
 r = f.on_text(222, "../../etc")
 check("bad Kurs rejected", "Try again" in r.text and f.sessions[222].state == "kurs")
 r = f.on_text(222, "M-GK4")
-check("Kurs typed -> asks the kind", "kind" in r.text and len(r.buttons) == 5)
+check("Kurs typed -> asks the kind", "kind" in r.text and len(r.buttons) == len(tb.KINDS) == 6)
 check("unknown kind refused", "expired" in f.on_choice(222, "kind:hack").text)
 r = f.on_choice(222, "kind:exam")
 check("saved under the user's own account", r.text.startswith("Saved 1 to M-GK4 as exam")

@@ -23,6 +23,7 @@ hackathon/
 │   │   ├── auth.py               WebUntis login, sessions, per-user data cache, Telegram accounts and invites, throttling
 │   │   ├── notify.py             hook: the OCR worker tells the bot a photo has been read
 │   │   ├── materials.py          upload validation, storage, search, vault notes, OCR results
+│   │   ├── vocab.py              vocabulary tests: read word pairs from a photo, answer checking, quiz rounds
 │   │   ├── models.py             pydantic models (Lesson, Homework, Exam, LessonNote, ...)
 │   │   ├── telegram_bot.py       the bot: conversation and commands (Flow) plus python-telegram-bot handlers
 │   │   ├── untis/
@@ -41,7 +42,8 @@ hackathon/
 │   └── scripts/
 │       ├── test_untis.py         login check with the credentials in .env
 │       ├── test_bot_flow.py      offline: migration, conversation, linking
-│       └── test_ocr.py           offline: worker, statuses, search, redaction
+│       ├── test_ocr.py           offline: worker, statuses, search, redaction
+│       └── test_vocab.py         offline: answer checking, word sets, the quiz conversation
 ├── web/index.html                single-page UI: login, schedule, homework, upload, materials, search
 ├── data/                         SQLite file and uploaded photos (gitignored)
 ├── vault/                        generated Obsidian notes (gitignored, rebuildable)
@@ -80,6 +82,8 @@ hackathon/
 | `telegram_links` | `telegram_id` to `user_key` |
 | `telegram_users` | people who joined the bot (`telegram_id`, `joined`, `via` = the invite code or `admin`) |
 | `invites` | `code`, `created`, `expires`, `max_uses`, `uses`, `revoked` |
+| `vocab_sets` | one per uploaded vocab page: `material_id` (unique), `owner`, `lang_front`, `lang_back` |
+| `vocab_items` | the word pairs: `set_id`, `front`, `back`, and `correct` / `missed` / `last_seen` counters |
 
 Older databases are migrated on start (owner and visibility, then `ocr_status`). Photos live at `data/uploads/<sha256>.<ext>`. The vault note for each photo is `vault/<Kurs>/<date> <kind> <id>.md`, with the image copied to `vault/_attachments/`.
 
@@ -156,11 +160,16 @@ Uploads accept JPEG, PNG and WebP up to 15 MB, checked from the file's bytes, no
 | `/week [next]`, `/today`, `/homework` | joined, after `/login` | the person's own cached Untis data |
 | *send a photo or an album* | joined | asks for the Kurs (buttons, or type it) and kind, then files them |
 | `/search words`, `/list`, `/show N`, `/delete N`, `/retry N` | joined | work on the person's own uploads |
+| `/quiz [N] [reverse]`, `/words [N]` | joined | `/quiz` reads the word pairs from upload N (once, then cached) and runs a test of up to 25 words; without N it uses the latest vocab page. `/words` lists the pairs. Deleting the upload deletes its words. |
 | `/cancel`, `/help` | joined | drop pending photos; help |
 | `/link CODE` | anyone with a website code | connect a website account (not in the menu) |
 | `/invite [N]`, `/invites`, `/revoke CODE` | admins | manage invite links |
 
 The menu Telegram shows when typing `/` comes from `COMMANDS` and `ADMIN_COMMANDS` in `telegram_bot.py`, published at startup with `setMyCommands` (admins get a longer list through a per-chat scope). `Flow` holds all the logic and has no Telegram imports, which is why `test_bot_flow.py` can test it offline.
+
+## Vocabulary tests
+
+`vocab.py` has three parts. **Reading:** `gemini.extract_json` sends the photo with a fixed schema (front, back, plus the two language names) and gets structured JSON back, so the columns of a vocab table are read as columns. The result is cleaned (duplicates, pairs with a missing side and over-long entries dropped, at most 200 words) and stored once per upload. Reading new pages is rate-limited per person (`VOCAB_BUILD_LIMIT` per 15 minutes) because each is a paid call. **Checking:** `check_answer` returns correct, close or wrong. Case, punctuation and ß/ss are ignored; text in parentheses and comma, slash or semicolon alternatives are optional; an article may be left out (a note says so) but not swapped for a different one; accents and a one-letter typo (two for words of 9+ letters) count as close; words of 4 letters or fewer must be exact. **Quiz:** a round is up to 25 words, picked by lowest right-minus-missed score (random tie-break) and then shuffled. State lives in the chat session (`Session.quiz`, kept 30 idle minutes); every answer updates the word's counters; the end screen offers `quiz:missed` and `quiz:again` buttons.
 
 ## Legacy (transcription path)
 

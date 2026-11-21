@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from app import auth, config, notify, ocr
+from app import auth, config, notify, ocr, vocab
 from app.auth import admin_ids as allowed_users          # ALLOWED_USERS = the admins
 from app.untis import schools
 from app.materials import (KINDS, KURS_RE, UploadError, delete_material, list_materials, material_text,
@@ -36,6 +36,7 @@ HELP = (
     "read the text, and keep them searchable. Only you can see your uploads.\n\n"
     "Tip: send exams as a File (paperclip > File), not as a Photo. Telegram squashes photos "
     "and the text gets hard to read.\n\n"
+    "Vocabulary: photograph a vocab page, choose the kind 'vocab', then /quiz NUMBER and I'll test you.\n\n"
     "Your school account is optional but useful: /login gives you your own Kurs buttons, /week and /homework, for any school on WebUntis.\n\n"
     "Type / to see all commands."
 )
@@ -59,6 +60,8 @@ COMMANDS = [
     ("show", "read the text of a photo, e.g. /show 12"),
     ("delete", "delete an upload, e.g. /delete 12"),
     ("retry", "read a photo's text again, e.g. /retry 12"),
+    ("quiz", "vocab test on a vocabulary page, e.g. /quiz 12"),
+    ("words", "list the words found on a page, e.g. /words 12"),
     ("login", "connect your school account (I ask for school, username, password)"),
     ("logout", "forget your schedule and homework"),
     ("cancel", "drop the photos I'm holding"),
@@ -85,6 +88,8 @@ class Session:
     schools: list = field(default_factory=list)                          # school search results to pick from
     school: object | None = None                                         # the chosen schools.School
     username: str | None = None
+    quiz: object | None = None                                           # the running vocab test
+    last_quiz: object | None = None                                      # the finished one, for the buttons
     touched: float = field(default_factory=time.time)
 
 
@@ -155,6 +160,8 @@ class Flow:
             s = self._s(uid)
             if s.pending:
                 return Reply("You have photos waiting. Finish them (or send /cancel) before logging in.")
+            if s.state == "quiz":
+                return Reply("You're in a vocabulary test. Finish it, or send /cancel, before logging in.")
             s.state, s.schools, s.school, s.username = "login_school", [], None, None
         return Reply("Which school? Type its name, for example 'Hulda Pankok'. (/cancel to stop)")
 
@@ -307,6 +314,8 @@ class Flow:
             s = self._s(uid)
             if s.state and s.state.startswith("login"):
                 return Reply("You're in the middle of logging in. Finish it, or send /cancel, before sending photos.")
+            if s.state == "quiz":
+                return Reply("You're in the middle of a vocabulary test. Finish it, or send /cancel, before sending photos.")
             held = sum(len(b) for b, _ in s.pending)
             take = []
             for data, name in items:
@@ -334,6 +343,8 @@ class Flow:
             return self._login_username(uid, text)
         if state == "login_pass":
             return self._login_password(uid, text)
+        if state == "quiz":
+            return self._quiz_answer(uid, text)
         with self._lock:
             s = self._s(uid)
             if s.state != "kurs":
@@ -359,6 +370,10 @@ class Flow:
             if key == "kurs" and s.state == "kurs" and KURS_RE.match(value):
                 return self._ask_kind(uid, value)
             ready = key == "kind" and s.state == "kind" and value in KINDS and bool(s.kurs)
+            again = (s.last_quiz, value) if (key == "quiz" and s.state is None and s.last_quiz is not None
+                                             and value in ("missed", "again")) else None
+        if again:
+            return self._quiz_restart(uid, *again)
         if ready:
             return self._save(uid, value)
         return Reply("That choice has expired. Send the photos again.")
@@ -391,6 +406,8 @@ class Flow:
             parts.append(f"{dup} already uploaded.")
         if errors:
             parts.append("Problems:\n" + "\n".join(errors))
+        if saved and kind == "vocab":
+            parts.append(f"Test yourself with /quiz {saved[0]}.")
         if saved and ocr.enabled():
             parts.append("I'm reading the text in the background and will tell you when it's done.")
         return Reply(" ".join(parts) if parts else "Nothing to save.")
@@ -463,6 +480,131 @@ class Flow:
         if not first:
             return f"#{mid} was read, but I found no text in it."
         return f"#{mid} is read. It starts with: {_one_line(first, 120)}\n/show {mid} for the full text."
+
+    # --- vocabulary tests ---------------------------------------------------------------------
+
+    @staticmethod
+    def _quiz_args(args: tuple[str, ...]) -> tuple[int | None, bool]:
+        mid, reverse = None, False
+        for a in args:
+            if a.lower() in ("reverse", "back", "r"):
+                reverse = True
+            elif a.lstrip("#").isdecimal():
+                mid = int(a.lstrip("#"))
+        return mid, reverse
+
+    def needs_build(self, uid: int, *args: str) -> bool:
+        """True when /quiz or /words will have to read the page first, which takes a few seconds."""
+        owner = self.resolve(uid)
+        mid, _ = self._quiz_args(args)
+        return bool(owner and mid is not None and vocab.set_for_material(mid, owner) is None
+                    and material_text(mid, owner))
+
+    def _vocab_set(self, uid: int, owner: str, mid: int | None):
+        """The word set for an upload (read from the photo on first use), or a Reply explaining the problem."""
+        if mid is None:
+            latest = vocab.latest_set(owner)
+            if latest is None:
+                return Reply("Send me a vocabulary page first (pick the kind 'vocab'), then /quiz NUMBER.")
+            return latest
+        got = material_text(mid, owner)
+        if got is None:
+            return Reply("No upload with that number.")
+        if vocab.set_for_material(mid, owner) is None and not auth.action_allowed("vocab", uid):
+            return Reply("That's a lot of pages in a short time. Wait a few minutes and try again.")
+        try:
+            return vocab.build_set(mid, owner)
+        except vocab.VocabError as e:
+            return Reply(str(e))
+
+    def _title_of(self, vset, owner: str) -> str:
+        got = material_text(vset["material_id"], owner)
+        return (got[0].title or f"#{got[0].id} {got[0].kurs}") if got else f"#{vset['material_id']}"
+
+    def words(self, uid: int, *args: str) -> Reply:
+        owner = self.resolve(uid)
+        if owner is None:
+            return self.refuse(uid)
+        mid, _ = self._quiz_args(args)
+        vset = self._vocab_set(uid, owner, mid)
+        if isinstance(vset, Reply):
+            return vset
+        rows = vocab.items_of(vset["id"])
+        head = f"{self._title_of(vset, owner)}: {len(rows)} words ({vset['lang_front'] or '?'} -> {vset['lang_back'] or '?'})"
+        return Reply(head + "\n\n" + "\n".join(f"{r['front']} = {r['back']}" for r in rows))
+
+    def quiz(self, uid: int, *args: str) -> Reply:
+        owner = self.resolve(uid)
+        if owner is None:
+            return self.refuse(uid)
+        mid, reverse = self._quiz_args(args)
+        with self._lock:
+            s = self._s(uid)
+            if s.pending:
+                return Reply("You have photos waiting. Finish them (or send /cancel) first.")
+            if s.state:
+                return Reply("Finish what you're doing first, or send /cancel.")
+        vset = self._vocab_set(uid, owner, mid)
+        if isinstance(vset, Reply):
+            return vset
+        return self._quiz_begin(uid, vocab.make_quiz(vset, self._title_of(vset, owner), reverse), reverse)
+
+    def _quiz_begin(self, uid: int, quiz, reverse: bool) -> Reply:
+        quiz.reverse = reverse
+        with self._lock:
+            s = self._s(uid)
+            s.quiz, s.last_quiz, s.state = quiz, None, "quiz"
+        return Reply(f"Vocabulary test: {quiz.title}\n{len(quiz.cards)} words, {quiz.lang_ask} -> {quiz.lang_answer}. "
+                     "Type the translation. Send ? to skip a word, /cancel to stop.\n\n" + self._question(quiz))
+
+    @staticmethod
+    def _question(quiz) -> str:
+        return f"{quiz.pos + 1}/{len(quiz.cards)}  {quiz.current.ask}"
+
+    def _quiz_restart(self, uid: int, last, which: str) -> Reply:
+        owner = self.resolve(uid)
+        vset = vocab.set_by_id(last.set_id, owner or "")
+        if vset is None:
+            return Reply("That vocabulary page is gone. Send /quiz NUMBER for another.")
+        only = {c.id for c in last.missed} if which == "missed" else None
+        quiz = vocab.make_quiz(vset, last.title, getattr(last, "reverse", False), only)
+        if not quiz.cards:
+            return Reply("Nothing left to practise.")
+        return self._quiz_begin(uid, quiz, getattr(last, "reverse", False))
+
+    SKIP = {"?", "skip", "pass", "idk", "weiss nicht", "weiß nicht"}
+
+    def _quiz_answer(self, uid: int, text: str) -> Reply:
+        with self._lock:
+            s = self._s(uid)
+            quiz = s.quiz
+        if quiz is None or quiz.current is None:
+            return Reply("No test is running. Send /quiz NUMBER to start one.")
+        card = quiz.current
+        if text.strip().lower() in self.SKIP:
+            ok, line = False, f"The answer: {card.answer}"
+        else:
+            verdict = vocab.check_answer(text, card.answer)
+            ok = verdict.kind in ("correct", "close")
+            line = ("Correct." + (f" {verdict.note}" if verdict.note else "")) if ok else f"Not quite. It's: {card.answer}"
+        vocab.record(card.id, ok)
+        quiz.pos += 1
+        if ok:
+            quiz.correct += 1
+        else:
+            quiz.missed.append(card)
+        if quiz.current is not None:
+            return Reply(f"{line}\n\n{self._question(quiz)}")
+        with self._lock:                                     # finished
+            s.quiz, s.last_quiz, s.state = None, quiz, None
+        total = len(quiz.cards)
+        summary = f"{line}\n\nDone: {quiz.correct}/{total} right."
+        buttons = []
+        if quiz.missed:
+            summary += "\n\nTo practise:\n" + "\n".join(f"{c.ask} = {c.answer}" for c in quiz.missed[:15])
+            buttons.append([(f"Practise the {len(quiz.missed)} I missed", "quiz:missed")])
+        buttons.append([("Test everything again", "quiz:again")])
+        return Reply(summary, buttons)
 
     # --- admin: invites -----------------------------------------------------------------------
 
@@ -550,6 +692,8 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
                                "Please delete it yourself.")
             if name not in ("start", "link") and await asyncio.to_thread(flow.resolve, uid) is None:
                 return await refuse(update)
+            if name in ("quiz", "words") and await asyncio.to_thread(flow.needs_build, uid, *args):
+                await msg.reply_text("Reading the words from that page, one moment...")
             reply = await asyncio.to_thread(getattr(flow, name), uid, *args)
             if warning:
                 reply = Reply(reply.text + warning, reply.buttons)
@@ -640,7 +784,7 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
     app = Application.builder().token(token).concurrent_updates(True).build()
     app.add_handler(CommandHandler("whoami", cmd_whoami, filters=private))
     for name in ("start", "help", "login", "link", "logout", "week", "today", "homework", "list", "search",
-                 "show", "delete", "retry", "cancel", "invite", "invites", "revoke"):
+                 "show", "delete", "retry", "quiz", "words", "cancel", "invite", "invites", "revoke"):
         app.add_handler(CommandHandler(name, command(name, secret=name in ("login", "link")), filters=private))
     app.add_handler(MessageHandler((filters.PHOTO | filters.Document.IMAGE) & private, on_media))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & private, on_text))

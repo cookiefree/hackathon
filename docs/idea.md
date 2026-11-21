@@ -20,10 +20,12 @@ A loop: **send in -> file -> read -> find, ask, prepare -> revise**, tied to the
 3. **Read:** a vision model transcribes the photo, including handwriting and teacher corrections. Student name fields are blanked on a best-effort basis.
 4. **Find:** full-text search across your own materials.
 5. **Ask and prepare (not built yet):** answer questions from the Kurs's material with citations, and generate a mock exam and a revision plan from past exams in that teacher's style.
-6. **Link to the timetable (not built yet):** when Untis homework says "S. 84 Nr. 3", show the matching page from your materials.
+6. **Vocabulary tests:** photograph a vocab page, and the bot reads the word pairs and quizzes you on them in chat, tracking which words you keep missing.
+7. **Link to the timetable (not built yet):** when Untis homework says "S. 84 Nr. 3", show the matching page from your materials.
 
 ## What is built today
 - **A Telegram bot as the product.** Join with an invite link, optionally connect a school (WebUntis) account with `/login` (it asks for the school, so any WebUntis school works, then the username and the password), then upload photos and use `/week`, `/homework`, `/search`, `/show`, `/delete`.
+- **Vocabulary tests:** `/quiz` turns a photographed vocab page into a test in the chat, for any language pair, with lenient checking and practice of the missed words.
 - Per-user accounts: every person sees only their own uploads, schedule and homework.
 - An optional website (login with the school account, upload, search) for use on one machine.
 - Photo reading with Gemini (opt-in), a background worker, retry on failure, and search over the text.
