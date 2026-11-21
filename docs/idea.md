@@ -1,66 +1,81 @@
-# Timetable-aware second brain for school (working title)
+# School materials second brain (working title)
 
 AI Coding Hackathon, STARTPLATZ Cologne, 20-22 Nov 2026
 
+Status of this document: rewritten after the project changed direction. The first plan was built around recording lessons and transcribing them. That is no longer the focus (see "What changed"). `structure.md` has the technical layout, and the README has the build status.
+
 ## One-line pitch
-The first school tool that makes sure you actually learn what you sat through: it listens to the lesson, writes the notes, catches the homework your school system missed, and then makes you revise.
+Photograph a worksheet, a book page or a corrected exam, and it is filed under your Kurs, read, and searchable. Soon you can ask it questions and get exam prep built from your own teacher's material, tied to your WebUntis timetable.
 
 ## Problem
-- Lessons produce a lot of information, and most of it is lost by the evening.
-- WebUntis knows the timetable, but not what happened in the lesson. Homework said out loud never reaches it.
-- Note-taking AI tools stop at the transcript. Nobody acts on the notes.
+- The best study material a student has, corrected exams, worksheets and book pages, ends up as photos in a camera roll or paper in a bag. It is not organised, not searchable, and forgotten by the next exam.
+- WebUntis knows the timetable and the homework, but nothing about the material itself. Homework like "S. 84 Nr. 3" points at a page the system cannot show.
+- General AI tools do not know *your* Kurs, your teacher's style, or what was actually taught.
 
 ## Solution
-A loop: **lesson -> notes -> tasks -> revision**, driven by an agent that knows the timetable.
+A loop: **send in -> file -> read -> find, ask, prepare -> revise**, tied to the timetable.
 
-1. **Capture:** record the lesson (with consent) or send a voice note, photo of the board, or text.
-2. **Transcribe:** local Whisper, so no audio leaves the machine.
-3. **Agent:** gets the transcript plus the Untis context for that exact lesson (subject, teacher, room, existing homework, exam dates). It extracts key concepts, definitions, formulas, "this will be on the test" moments, and spoken homework or deadlines.
-4. **Cross-check:** compare with Untis data. Example: "Physik: Hausaufgabe S. 84 Nr. 3, due Tuesday, not in Untis."
-5. **Output:** one structured note per lesson in an Obsidian vault, plus tasks with deadlines.
-6. **Follow-up:** quiz questions and flashcards per lesson, spaced out, and a revision plan counted back from exam dates.
+1. **Send in:** photo from the web page or the Telegram bot. Exam, worksheet, book page, board, or notes.
+2. **File:** the photo is stored under the sender's account, with a Kurs (suggested from their own Untis timetable) and a kind.
+3. **Read:** a vision model transcribes the photo, including handwriting and teacher corrections. Student name fields are blanked on a best-effort basis.
+4. **Find:** full-text search across your own materials.
+5. **Ask and prepare (not built yet):** answer questions from the Kurs's material with citations, and generate a mock exam and a revision plan from past exams in that teacher's style.
+6. **Link to the timetable (not built yet):** when Untis homework says "S. 84 Nr. 3", show the matching page from your materials.
+
+## What is built today
+- Sign in with a school (WebUntis) account. Per-user schedule, homework, and uploads.
+- Photo upload from the web page and from a Telegram bot, linked to the same account.
+- Photo reading with Gemini (opt-in), a background worker, retry on failure, and search over the text.
+- An optional Obsidian vault, generated from the database.
+
+See the README for details and limits.
 
 ## Interaction
-- **Telegram bot (primary):**
-  - send audio, photos, or text; the bot files them to the current lesson by timestamp
-  - push alerts: Entfall, substitution, room change, new homework or exam
-  - daily digest: what's due, what was cancelled, what to revise
-  - quiz questions delivered as chat messages
-- **Website (fallback):**
-  - same data without Telegram: upload recordings, browse lesson notes, view tasks and the revision plan, take quizzes
-  - lets us demo even if Telegram or the network misbehaves
+- **Telegram bot:** send photos, pick the Kurs and kind with buttons, get a confirmation. `/list`, `/link`. Later: alerts for Entfall, substitutions and new homework, and quiz questions as chat messages.
+- **Website:** log in, see your week and open homework, upload photos (drop area, several at once, camera button on phones), browse and search your materials.
+- **Obsidian (optional):** a folder of Markdown notes, one per photo, with the image embedded. A reading view for one person's own data, not the main interface.
 
-## Architecture
-- **Untis poller:** unofficial WebUntis API (`webuntis` Python lib), diffs the timetable every few minutes.
-- **Transcription:** faster-whisper, local.
-- **Agent:** LLM with tools: `get_lesson`, `get_homework`, `get_exams`, `write_note`, `create_task`, `schedule_quiz`, `notify`.
-- **Storage:** Markdown files (Obsidian vault) plus a small SQLite DB for tasks and quiz state.
-- **Interfaces:** Telegram bot and a small web app, both calling the same backend.
+## Architecture (short)
+- **Backend:** Python and FastAPI. SQLite with full-text search. Photos on disk.
+- **Untis:** python-webuntis plus the raw homework endpoint, behind a provider interface with a mock for demos.
+- **Accounts:** login is a check against WebUntis. The password is used once and never stored. Sessions are random tokens, stored hashed.
+- **Photo reading:** Gemini API, called from a background worker, one photo at a time.
+- **LLM for answers:** behind one interface (`LLMClient`). Only a stub exists. Candidates are Gemini, Claude, or a local model through llama.cpp.
+- **Interfaces:** the web page and the Telegram bot, both calling the same backend code.
 
 ## Privacy and legality
-- Recording only with the teacher's explicit consent (in Germany, recording without consent is an offence, §201 StGB), or only the user's own voice dictation after class.
-- Local transcription; no audio leaves the machine.
-- Demo with our own or consenting recordings, never a real class.
+Be straight about this in the pitch, because it is the hardest part of the idea.
+- **Personal data of minors.** Corrected exams carry names, grades and teachers' remarks. Anything shared beyond the owner needs a legal basis, so everything is **private by default**, and each person only ever sees their own uploads.
+- **Copyright.** Textbook pages belong to publishers and exams to the teacher or school. Sharing photos with a whole school is distribution. Do not put real book pages or exams in the repo or the demo.
+- **Photos go to Google when reading is switched on.** It is opt-in. On a free API key Google may use content to improve its products, so use a paid-tier key or leave it off for real student material.
+- **Name hiding is partial.** Name fields are blanked in the extracted text, but signatures, margins and names in the body are not caught, and the stored photo is unchanged.
+- **School passwords.** The server sees a visitor's password in transit, and the app relies on WebUntis's unofficial API. Check with the school before opening it beyond a small trusted group, and only serve it over HTTPS.
+- Nothing here is legal advice. Before it goes beyond a prototype, check data protection and copyright with someone qualified.
 
-## Build order (48h)
-1. Test the Untis login; if blocked, use mock data and say so.
-2. Poller, diff, and Telegram notifications.
-3. Transcription, then the agent, then per-lesson note generation.
-4. Cross-check against Untis (the demo highlight).
-5. Quizzes and revision plan.
-6. Web fallback.
-7. Pitch prep (start Saturday afternoon, not Sunday morning).
-
-## Team split (suggestion)
-- Untis poller, diff, notifications
-- Transcription and agent
-- Obsidian output, quizzes, revision plan
-- Web fallback and pitch
+## What changed, and why
+- **Transcribing lessons was dropped as the focus.** Recording a class needs the teacher's consent (§201 StGB), whole-lesson audio is noisy and large, and a phone is a poor long recorder. Photos of material are easier to get, easier to read, and legally lighter.
+- The old pieces still exist in the backend (`/api/analyze`, the agent and the homework cross-check, behind a stub LLM). Transcription could come back later as an optional input.
+- **Untis exams are not readable** with a student account (`no right for getExams()`), so exam dates cannot come from Untis. Past exams uploaded as photos are the material instead.
 
 ## Demo plan
-Record 30 seconds of a consenting person explaining something, and show: transcript, structured note, "homework not in Untis" alert on Telegram, and the generated quiz.
+Use your own or invented material, never a real class's exam or a book page you cannot show.
+1. Log in (real account, or the demo mode).
+2. Send a photo of a made-up corrected exam to the Telegram bot: pick Kurs and kind.
+3. It appears on the website, gets read, and shows the text.
+4. Search for a word in it.
+5. Show the Untis homework next to it. If the Q&A is ready: ask a question and get an answer with a citation, then generate a mock exam.
 
 ## Risks
-- Untis access blocked by the school: fall back to mock data.
-- Narrow audience: lead the pitch with the cross-check and the learning loop, not "AI notes".
-- Too much scope: the cross-check demo must work before quizzes or the website.
+- **Legal and data protection** (above). Lead with private-by-default and be ready to explain it.
+- **Cold start for sharing.** A shared archive is useless until several people in the same Kurs contribute, and a Kurs has about 15 to 20 students.
+- **Wrong answers.** Student solutions can be wrong. Answers need citations, a preference for teacher-corrected material, and "I don't know" as a valid reply.
+- **Reachability.** Others can only use it if it is served over HTTPS from a machine that stays on. A laptop or home PC is fine for a demo and a small group, not for a school.
+- **Model churn.** Gemini models are retired or overloaded without much notice (one default was already closed to new keys, others returned 503 during testing). Keep the model name a setting and handle failures.
+- **Scope.** Q&A and exam prep are the payoff and are not built yet. Everything else exists to feed them.
+
+## Decisions and open questions
+- **Private by default, sharing later:** decided for now. Sharing within a Kurs is planned (the `visibility` field exists) but not built.
+- **Which LLM for answers:** open. Gemini (a key exists, and it reads images), Claude, or a local llama.cpp server.
+- **Where it runs for the demo:** open. This laptop works for a demo. The desktop PC has the GPU for a local model.
+- **Public access:** open. Needs an HTTPS tunnel, and a decision on whether to open it beyond the team at all.
+- **Does the school allow this?** Unanswered, and it decides whether this is a prototype or something you could roll out.
