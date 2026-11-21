@@ -19,6 +19,9 @@ from app.models import Analysis, Homework, Lesson
 from app.telegram_bot import start_bot, stop_bot
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s: %(message)s")
+# Telegram's API puts the bot token in every request URL, and httpx logs URLs at INFO.
+for _noisy in ("httpx", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 WEB = Path(__file__).resolve().parents[2] / "web"
 llm = get_llm()
@@ -26,6 +29,9 @@ llm = get_llm()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if auth.mode() == "mock":
+        logging.getLogger(__name__).warning(
+            "DEMO LOGIN IS ON: any username with the password 'demo' gets in. Never use this on a shared server.")
     queued = ocr_worker.enqueue_backlog()
     if queued:
         logging.getLogger(__name__).info("Reading %d photo(s) that were not read yet.", queued)
@@ -85,11 +91,11 @@ def link_code(user: str = Depends(current_user)):
 # --- the user's own Untis data (fetched when they logged in) ---------------------------------
 
 def _lessons(user: str) -> list[Lesson]:
-    return [Lesson.model_validate(x) for x in auth.user_data(user, "timetable")[0]]
+    return auth.lessons_of(user)
 
 
 def _homework(user: str) -> list[Homework]:
-    return [Homework.model_validate(x) for x in auth.user_data(user, "homework")[0]]
+    return auth.homework_of(user)
 
 
 @app.get("/api/timetable")

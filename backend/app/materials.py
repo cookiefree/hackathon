@@ -12,12 +12,13 @@ from pydantic import BaseModel
 
 from app import config
 from app.db import DATA_DIR, connect
-from app import ocr
+from app import notify, ocr
 
 KINDS = {"exam", "worksheet", "book", "board", "notes"}
 MAX_BYTES = 15 * 1024 * 1024
-KURS_RE = re.compile(r"^[\w.\- ]{1,40}$")
+KURS_RE = re.compile(r"^\w[\w.\- ]{0,39}$")      # must start with a letter or digit: no ".", no ".."
 VAULT = Path(config.get("VAULT_PATH", str(config.ROOT / "vault")))
+MAX_PER_OWNER = int(config.get("MAX_UPLOADS_PER_USER", "500"))
 
 
 class UploadError(ValueError):
@@ -53,6 +54,14 @@ def sniff_ext(data: bytes) -> str | None:
     return None
 
 
+def _kurs_dir(kurs: str) -> Path:
+    """The vault folder for a Kurs, guaranteed to stay inside the vault."""
+    folder = VAULT / re.sub(r"[^\w.\- ]", "_", kurs)
+    if not folder.resolve().is_relative_to(VAULT.resolve()):
+        raise UploadError("Invalid Kurs name.")
+    return folder
+
+
 def _material(row, duplicate: bool = False) -> Material:
     return Material(id=row["id"], owner=row["owner"], visibility=row["visibility"], kurs=row["kurs"], kind=row["kind"], title=row["title"],
                     filename=row["filename"], sha256=row["sha256"],
@@ -81,6 +90,8 @@ def save_upload(data: bytes, filename: str, kurs: str, kind: str, title: str = "
         existing = con.execute("SELECT * FROM materials WHERE owner=? AND kurs=? AND sha256=?", (owner, kurs, sha)).fetchone()
         if existing:
             return _material(existing, duplicate=True)
+        if con.execute("SELECT COUNT(*) FROM materials WHERE owner=?", (owner,)).fetchone()[0] >= MAX_PER_OWNER:
+            raise UploadError(f"Upload limit reached ({MAX_PER_OWNER} photos). Delete some first.", 429)
 
         rel = f"uploads/{sha}{ext}"
         dest = DATA_DIR / rel
@@ -113,6 +124,7 @@ def store_ocr_result(material_id: int, text: str, status: str) -> None:
         row = con.execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
     if row:
         write_vault_note(row)
+        notify.ocr_finished(row["owner"], material_id, status, text)
 
 
 def request_reread(material_id: int, owner: str) -> bool:
@@ -120,7 +132,8 @@ def request_reread(material_id: int, owner: str) -> bool:
     if not ocr.enabled():
         return False
     with connect() as con:
-        cur = con.execute("UPDATE materials SET ocr_status='pending' WHERE id=? AND owner=?", (material_id, owner))
+        cur = con.execute("UPDATE materials SET ocr_status='pending' "
+                          "WHERE id=? AND owner=? AND ocr_status != 'pending'", (material_id, owner))
     if cur.rowcount == 0:
         return False
     from app.ocr import worker
@@ -147,7 +160,7 @@ def search_materials(q: str, owner: str, limit: int = 20) -> list[Material]:
 
 def write_vault_note(row) -> Path:
     """One Markdown note per photo, with the image embedded. Rebuildable from the DB."""
-    kurs_dir = VAULT / re.sub(r"[^\w.\- ]", "_", row["kurs"])
+    kurs_dir = _kurs_dir(row["kurs"])
     kurs_dir.mkdir(parents=True, exist_ok=True)
     att = VAULT / "_attachments"
     att.mkdir(parents=True, exist_ok=True)
@@ -169,7 +182,7 @@ def list_materials(kurs: str | None = None, owner: str | None = None, limit: int
     where, args = [], []
     if kurs:
         where.append("kurs=?"); args.append(kurs)
-    if owner:
+    if owner is not None:                   # "" must match nothing, never everything
         where.append("owner=?"); args.append(owner)
     sql = "SELECT * FROM materials" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC"
     if limit:
@@ -192,3 +205,30 @@ def file_owner_path(material_id: int, owner: str) -> Path | None:
     with connect() as con:
         row = con.execute("SELECT path FROM materials WHERE id=? AND owner=?", (material_id, owner)).fetchone()
     return DATA_DIR / row["path"] if row else None
+
+
+def material_text(material_id: int, owner: str) -> tuple[Material, str] | None:
+    """One of the owner's materials with its full extracted text."""
+    with connect() as con:
+        row = con.execute("SELECT * FROM materials WHERE id=? AND owner=?", (material_id, owner)).fetchone()
+    return (_material(row), row["ocr_text"]) if row else None
+
+
+def delete_material(material_id: int, owner: str) -> bool:
+    """Remove a photo, its row, its search entry and its vault note. Only the owner may."""
+    with connect() as con:
+        row = con.execute("SELECT * FROM materials WHERE id=? AND owner=?", (material_id, owner)).fetchone()
+        if row is None:
+            return False
+        con.execute("DELETE FROM materials WHERE id=?", (material_id,))
+        con.execute("DELETE FROM materials_fts WHERE rowid=?", (material_id,))
+        still_used = con.execute("SELECT 1 FROM materials WHERE sha256=? LIMIT 1", (row["sha256"],)).fetchone()
+
+    kurs_dir = _kurs_dir(row["kurs"])
+    for note in kurs_dir.glob(f"* {row['kind']} {material_id}.md"):
+        note.unlink(missing_ok=True)
+    if not still_used:                       # the same photo may belong to another owner
+        stored = DATA_DIR / row["path"]
+        stored.unlink(missing_ok=True)
+        (VAULT / "_attachments" / stored.name).unlink(missing_ok=True)
+    return True

@@ -36,6 +36,13 @@ CREATE TABLE IF NOT EXISTS link_codes (        -- one-time codes to connect a Te
 CREATE TABLE IF NOT EXISTS telegram_links (
     telegram_id TEXT PRIMARY KEY, user_key TEXT NOT NULL, linked TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS telegram_users (    -- people who joined the bot with an invite (or are admins)
+    telegram_id TEXT PRIMARY KEY, joined TEXT NOT NULL, via TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS invites (           -- t.me/<bot>?start=<code>
+    code TEXT PRIMARY KEY, created TEXT NOT NULL, expires TEXT NOT NULL,
+    max_uses INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0
+);
 """
 SCHEMA = (MATERIALS_SQL + ACCOUNTS_SQL
           + "CREATE VIRTUAL TABLE IF NOT EXISTS materials_fts USING fts5(title, ocr_text);")

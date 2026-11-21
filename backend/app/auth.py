@@ -35,23 +35,36 @@ class AuthError(Exception):
 
 _fails: dict[str, list[float]] = {}
 _lock = threading.Lock()
+USER_FAIL_LIMIT = 20       # per username: high, so someone else's guesses cannot easily lock you out
 
 
-def _recent(key: str) -> list[float]:
+def _limit(key: str) -> int:
+    return USER_FAIL_LIMIT if key.startswith("user:") else FAIL_LIMIT
+
+
+def _prune(key: str) -> list[float]:
     cutoff = time.time() - FAIL_WINDOW
-    _fails[key] = [t for t in _fails.get(key, []) if t > cutoff]
-    return _fails[key]
+    kept = [t for t in _fails.get(key, []) if t > cutoff]
+    if kept:
+        _fails[key] = kept
+    else:
+        _fails.pop(key, None)          # do not keep empty keys around forever
+    return kept
 
 
 def _blocked(keys: list[str]) -> bool:
     with _lock:
-        return any(len(_recent(k)) >= FAIL_LIMIT for k in keys)
+        return any(len(_prune(k)) >= _limit(k) for k in keys)
 
 
 def _record_failure(keys: list[str]) -> None:
     with _lock:
+        if len(_fails) > 5000:
+            for k in list(_fails):
+                _prune(k)
         for k in keys:
-            _recent(k).append(time.time())
+            _prune(k)
+            _fails.setdefault(k, []).append(time.time())
 
 
 # --- Untis -----------------------------------------------------------------------------------
@@ -89,6 +102,9 @@ def _fetch_from_untis(username: str, password: str) -> tuple[str, list, list]:
     except (webuntis.errors.RemoteError, OSError) as e:
         log.warning("Untis login failed: %s", type(e).__name__)
         raise AuthError("Could not reach WebUntis. Try again in a moment.", 502)
+    except Exception as e:                     # anything unexpected: say nothing about the details
+        log.warning("Untis login failed unexpectedly: %s", type(e).__name__)
+        raise AuthError("Could not check your login right now. Try again in a moment.", 502)
     finally:
         p.close()
     return f"{p.school}:{person_type}:{person_id}", lessons, homework
@@ -146,13 +162,18 @@ def login(request: Request, response: Response, username: str, password: str) ->
         con.execute("INSERT INTO sessions (token_hash, user_key, created, expires) VALUES (?,?,?,?)",
                     (_hash(token), user_key, now.isoformat(timespec="seconds"),
                      (now + timedelta(days=SESSION_DAYS)).isoformat(timespec="seconds")))
-        for name, items in (("timetable", lessons), ("homework", homework)):
-            con.execute("INSERT OR REPLACE INTO user_data (user_key, name, json, fetched) VALUES (?,?,?,?)",
-                        (user_key, name, json.dumps([i.model_dump(mode="json") for i in items]),
-                         now.isoformat(timespec="seconds")))
+    _store_user_data(user_key, lessons, homework)
     response.set_cookie(COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True, samesite="lax",
                         secure=request.headers.get("x-forwarded-proto", request.url.scheme) == "https")
     return user_key
+
+
+def _store_user_data(user_key: str, lessons: list, homework: list) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        for name, items in (("timetable", lessons), ("homework", homework)):
+            con.execute("INSERT OR REPLACE INTO user_data (user_key, name, json, fetched) VALUES (?,?,?,?)",
+                        (user_key, name, json.dumps([i.model_dump(mode="json") for i in items]), now))
 
 
 def current_user(request: Request) -> str:
@@ -182,6 +203,21 @@ def user_data(user_key: str, name: str) -> tuple[list[dict], str | None]:
     return (json.loads(row["json"]), row["fetched"]) if row else ([], None)
 
 
+def lessons_of(user_key: str):
+    from app.models import Lesson
+    return [Lesson.model_validate(x) for x in user_data(user_key, "timetable")[0]]
+
+
+def homework_of(user_key: str):
+    from app.models import Homework
+    return [Homework.model_validate(x) for x in user_data(user_key, "homework")[0]]
+
+
+def clear_user_data(user_key: str) -> None:
+    with connect() as con:
+        con.execute("DELETE FROM user_data WHERE user_key=?", (user_key,))
+
+
 def kurse_of(user_key: str) -> list[str]:
     lessons, _ = user_data(user_key, "timetable")
     return sorted({l["subject"] for l in lessons if l.get("subject") and l["subject"] != "?"})
@@ -201,16 +237,21 @@ def new_link_code(user_key: str) -> str:
 
 def link_telegram(telegram_id: int, code: str) -> str | None:
     """Consume a code and connect this Telegram account to the user. Returns the user key, or None."""
+    keys = [f"link:{telegram_id}"]
+    if _blocked(keys):
+        return None
     now = datetime.now().isoformat(timespec="seconds")
     with connect() as con:
         row = con.execute("SELECT user_key FROM link_codes WHERE code=? AND expires > ?", (code, now)).fetchone()
         if not row:
+            _record_failure(keys)
             return None
         con.execute("DELETE FROM link_codes WHERE code=?", (code,))
         con.execute("INSERT OR REPLACE INTO telegram_links (telegram_id, user_key, linked) VALUES (?,?,?)",
                     (str(telegram_id), row["user_key"], now))
-        # Uploads made before linking (owner = the bare Telegram id) now belong to the account.
-        con.execute("UPDATE OR IGNORE materials SET owner=? WHERE owner=?", (row["user_key"], str(telegram_id)))
+        # Uploads made before linking (under the bare Telegram id or the tg: account) now belong to the account.
+        con.execute("UPDATE OR IGNORE materials SET owner=? WHERE owner IN (?, ?)",
+                    (row["user_key"], str(telegram_id), tg_key(telegram_id)))
     return row["user_key"]
 
 
@@ -218,3 +259,107 @@ def linked_user(telegram_id: int) -> str | None:
     with connect() as con:
         row = con.execute("SELECT user_key FROM telegram_links WHERE telegram_id=?", (str(telegram_id),)).fetchone()
     return row["user_key"] if row else None
+
+
+# --- Telegram accounts and invites ------------------------------------------------------------
+
+INVITE_DAYS = 14
+INVITE_USES = 25
+
+
+def admin_ids() -> set[int]:
+    """Telegram IDs in ALLOWED_USERS. They may create invites and never need one themselves."""
+    return {int(p) for p in (x.strip() for x in config.get("ALLOWED_USERS").split(",")) if p.isdigit()}
+
+
+def tg_key(telegram_id: int) -> str:
+    return f"tg:{telegram_id}"
+
+
+def owner_for_telegram(telegram_id: int) -> str | None:
+    """The account a Telegram user acts as, or None if they have not joined.
+
+    A linked website account wins; otherwise a joined user is `tg:<id>`. Admins join automatically,
+    and uploads they made under their bare ID (before accounts existed) move to their account.
+    """
+    linked = linked_user(telegram_id)
+    if linked:
+        return linked
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        if con.execute("SELECT 1 FROM telegram_users WHERE telegram_id=?", (str(telegram_id),)).fetchone():
+            return tg_key(telegram_id)
+        if telegram_id in admin_ids():
+            con.execute("INSERT OR IGNORE INTO telegram_users (telegram_id, joined, via) VALUES (?,?,?)",
+                        (str(telegram_id), now, "admin"))
+            con.execute("UPDATE OR IGNORE materials SET owner=? WHERE owner=?",
+                        (tg_key(telegram_id), str(telegram_id)))
+            return tg_key(telegram_id)
+    return None
+
+
+def telegram_ids_for(owner: str) -> list[int]:
+    """Telegram chats that belong to an account (to tell them a photo has been read)."""
+    if owner.startswith("tg:") and owner[3:].isdigit():
+        return [int(owner[3:])]
+    with connect() as con:
+        rows = con.execute("SELECT telegram_id FROM telegram_links WHERE user_key=?", (owner,)).fetchall()
+    return [int(r["telegram_id"]) for r in rows if r["telegram_id"].isdigit()]
+
+
+def create_invite(max_uses: int = INVITE_USES, days: int = INVITE_DAYS) -> str:
+    code = secrets.token_urlsafe(6)
+    now = datetime.now()
+    with connect() as con:
+        con.execute("INSERT INTO invites (code, created, expires, max_uses) VALUES (?,?,?,?)",
+                    (code, now.isoformat(timespec="seconds"),
+                     (now + timedelta(days=days)).isoformat(timespec="seconds"), max_uses))
+    return code
+
+
+def redeem_invite(code: str, telegram_id: int) -> bool:
+    """Use one slot of an invite and register the user. False if the code is unknown, revoked, used up or expired."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        cur = con.execute("UPDATE invites SET uses = uses + 1 WHERE code=? AND revoked=0 "
+                          "AND uses < max_uses AND expires > ?", (code, now))
+        if cur.rowcount != 1:
+            return False
+        con.execute("INSERT OR IGNORE INTO telegram_users (telegram_id, joined, via) VALUES (?,?,?)",
+                    (str(telegram_id), now, code))
+    return True
+
+
+def revoke_invite(code: str) -> bool:
+    with connect() as con:
+        return con.execute("UPDATE invites SET revoked=1 WHERE code=?", (code,)).rowcount == 1
+
+
+def list_invites() -> list[dict]:
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        rows = con.execute("SELECT * FROM invites ORDER BY created DESC LIMIT 10").fetchall()
+    return [dict(code=r["code"], uses=r["uses"], max_uses=r["max_uses"], expires=r["expires"],
+                 active=not r["revoked"] and r["uses"] < r["max_uses"] and r["expires"] > now) for r in rows]
+
+
+def telegram_login(telegram_id: int, owner: str, username: str, password: str) -> tuple[int, int]:
+    """Check a school login for a Telegram user and cache their timetable and homework under `owner`.
+
+    Same rules as the website: the password goes to WebUntis once and is never kept; failed attempts
+    are rate-limited. Returns (number of Kurse, number of open homework items).
+    """
+    username = username.strip()
+    if not username or not password:
+        raise AuthError("Send /login followed by your username and password.", 400)
+    keys = [f"tg:{telegram_id}", "user:" + hashlib.sha256(username.lower().encode()).hexdigest()]
+    if _blocked(keys):
+        raise AuthError("Too many failed attempts. Wait 15 minutes.", 429)
+    try:
+        _, lessons, homework = _fetch_from_untis(username, password)
+    except AuthError as e:
+        if e.status == 401:
+            _record_failure(keys)
+        raise
+    _store_user_data(owner, lessons, homework)
+    return len(kurse_of(owner)), sum(1 for h in homework if not h.completed)
