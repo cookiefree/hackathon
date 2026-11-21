@@ -116,6 +116,25 @@ def items_of(set_id: int) -> list:
         return con.execute("SELECT * FROM vocab_items WHERE set_id=? ORDER BY id", (set_id,)).fetchall()
 
 
+def quiz_for_kurse(owner: str, kurse: list[str], n: int, title: str) -> Quiz | None:
+    """A short quiz from the owner's vocab pages that belong to any of these Kurse (weakest words first)."""
+    if not kurse:
+        return None
+    marks = ",".join("?" * len(kurse))
+    with connect() as con:
+        sets = con.execute(f"SELECT s.* FROM vocab_sets s JOIN materials m ON m.id = s.material_id "
+                           f"WHERE s.owner=? AND m.kurs IN ({marks}) ORDER BY s.id", (owner, *kurse)).fetchall()
+    pool = [(s, r) for s in sets for r in items_of(s["id"])]
+    if not pool:
+        return None
+    pool.sort(key=lambda sr: (sr[1]["correct"] - sr[1]["missed"], random.random()))
+    chosen = pool[:n]
+    random.shuffle(chosen)
+    first = chosen[0][0]
+    cards = [Card(r["id"], r["front"], r["back"]) for _, r in chosen]
+    return Quiz(0, title, first["lang_front"] or "?", first["lang_back"] or "?", cards)   # set_id 0: mixed sources
+
+
 def set_by_id(set_id: int, owner: str):
     with connect() as con:
         return con.execute("SELECT * FROM vocab_sets WHERE id=? AND owner=?", (set_id, owner)).fetchone()

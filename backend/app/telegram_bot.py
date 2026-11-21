@@ -17,7 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from app import auth, config, notify, ocr, vocab
+from app import auth, config, notify, ocr, scheduler, vocab
+from app.scheduler import lesson_line as _lesson_line
 from app.auth import admin_ids as allowed_users          # ALLOWED_USERS = the admins
 from app.untis import schools
 from app.materials import (KINDS, KURS_RE, UploadError, delete_material, list_materials, material_text,
@@ -62,6 +63,7 @@ COMMANDS = [
     ("retry", "read a photo's text again, e.g. /retry 12"),
     ("quiz", "vocab test on a vocabulary page, e.g. /quiz 12"),
     ("words", "list the words found on a page, e.g. /words 12"),
+    ("remind", "evening reminder: /remind 17:00, /remind off, /remind now"),
     ("login", "connect your school account (I ask for school, username, password)"),
     ("logout", "forget your schedule and homework"),
     ("cancel", "drop the photos I'm holding"),
@@ -97,12 +99,6 @@ def _rows(labels: list[str], per_row: int = 3) -> list[list[tuple[str, str]]]:
     # Telegram rejects callback data over 64 bytes, which long non-ASCII names can exceed.
     buttons = [(k, f"kurs:{k}") for k in labels if len(f"kurs:{k}".encode()) <= 64]
     return [buttons[i:i + per_row] for i in range(0, len(buttons), per_row)]
-
-
-def _lesson_line(lesson) -> str:
-    tag = {"cancelled": " [cancelled]", "substituted": " [substituted]",
-           "room_changed": " [room changed]"}.get(lesson.status.value, "")
-    return f"  {lesson.start:%H:%M} {lesson.subject}  {', '.join(lesson.rooms) or '-'}  {', '.join(lesson.teachers) or '-'}{tag}"
 
 
 def _one_line(text: str, n: int) -> str:
@@ -216,7 +212,9 @@ class Flow:
         except auth.AuthError as e:
             return Reply(f"{e}\nSend /login to try again.")
         return Reply(f"Logged in at {s.school.name}. Found {kurse} Kurse and {open_hw} open homework items. "
-                     "Try /week and /homework. I did not keep your password.")
+                     "Try /week and /homework. I did not keep your password.\n\n"
+                     "Want a message the evening before each school day, with tomorrow's lessons and a few vocab words? "
+                     "Send /remind 17:00")
 
     def link(self, uid: int, *args: str) -> Reply:
         """Connect this Telegram to a website account, using the code the website shows."""
@@ -563,15 +561,21 @@ class Flow:
         return f"{quiz.pos + 1}/{len(quiz.cards)}  {quiz.current.ask}"
 
     def _quiz_restart(self, uid: int, last, which: str) -> Reply:
-        owner = self.resolve(uid)
-        vset = vocab.set_by_id(last.set_id, owner or "")
-        if vset is None:
+        reverse = getattr(last, "reverse", False)
+        if which == "missed":
+            cards = list(last.missed)
+            if not cards:
+                return Reply("Nothing left to practise.")
+            quiz = vocab.Quiz(last.set_id, last.title, last.lang_ask, last.lang_answer, cards, reverse=reverse)
+            return self._quiz_begin(uid, quiz, reverse)
+        vset = vocab.set_by_id(last.set_id, self.resolve(uid) or "") if last.set_id else None
+        if vset is not None:                                  # a single page: draw a fresh weighted round
+            return self._quiz_begin(uid, vocab.make_quiz(vset, last.title, reverse), reverse)
+        if last.set_id:
             return Reply("That vocabulary page is gone. Send /quiz NUMBER for another.")
-        only = {c.id for c in last.missed} if which == "missed" else None
-        quiz = vocab.make_quiz(vset, last.title, getattr(last, "reverse", False), only)
-        if not quiz.cards:
-            return Reply("Nothing left to practise.")
-        return self._quiz_begin(uid, quiz, getattr(last, "reverse", False))
+        cards = list(last.cards)                              # a mixed quiz (from a reminder): same words again
+        vocab.random.shuffle(cards)
+        return self._quiz_begin(uid, vocab.Quiz(0, last.title, last.lang_ask, last.lang_answer, cards, reverse=reverse), reverse)
 
     SKIP = {"?", "skip", "pass", "idk", "weiss nicht", "weiß nicht"}
 
@@ -606,6 +610,54 @@ class Flow:
             buttons.append([(f"Practise the {len(quiz.missed)} I missed", "quiz:missed")])
         buttons.append([("Test everything again", "quiz:again")])
         return Reply(summary, buttons)
+
+    # --- reminders ----------------------------------------------------------------------------
+
+    def start_reminder_quiz(self, uid: int, quiz) -> Reply | None:
+        """Begin a quiz the bot started itself, unless the person is in the middle of something."""
+        with self._lock:
+            s = self._s(uid)
+            if s.state or s.pending:
+                return None
+        return self._quiz_begin(uid, quiz, False)
+
+    def remind(self, uid: int, *args: str) -> Reply:
+        owner = self.resolve(uid)
+        if owner is None:
+            return self.refuse(uid)
+        word = args[0].lower() if args else ""
+        if word == "now":
+            return self._remind_now(uid, owner)
+        if word in ("off", "stop", "aus"):
+            scheduler.disable_reminder(owner)
+            return Reply("Reminder off. Turn it on again with /remind 17:00")
+        if not args:
+            row = scheduler.get_reminder(owner)
+            on = f"Your evening reminder is on, at {row['hhmm']}." if row and row["enabled"] else "Your evening reminder is off."
+            return Reply(on + "\n\n/remind 17:30  set the time (24-hour)\n/remind off  turn it off\n/remind now  see one now")
+        hhmm = scheduler.parse_time(args[0])
+        if hhmm is None:
+            return Reply("I didn't understand that time. Use 24-hour time, like /remind 17:30")
+        if not auth.lessons_of(owner):
+            return Reply(NEEDS_LOGIN)
+        scheduler.set_reminder(owner, uid, hhmm)
+        return Reply(f"Done. Every evening at {hhmm} I'll send tomorrow's lessons, the homework due, and a few vocab words "
+                     "from tomorrow's Kurse. /remind off to stop, /remind now to see one right away.")
+
+    def _remind_now(self, uid: int, owner: str) -> Reply:
+        if not auth.lessons_of(owner):
+            return Reply(NEEDS_LOGIN)
+        digest = scheduler.evening_digest(owner, date.today())
+        if digest is None:
+            return Reply("No lessons found in the next week. Send /login to refresh your schedule.")
+        quiz = vocab.quiz_for_kurse(owner, digest.kurse, scheduler.VOCAB_WORDS, f"Tomorrow's {', '.join(digest.kurse)}")
+        if quiz is None:
+            return Reply(digest.text + "\n\nNo vocab pages for those Kurse yet. Send a vocab page with the same Kurs "
+                         "(kind 'vocab') and I'll quiz you on it here.")
+        started = self.start_reminder_quiz(uid, quiz)
+        if started is None:
+            return Reply(digest.text + "\n\nFinish what you're doing first, or send /cancel, then /remind now again.")
+        return Reply(digest.text + "\n\n" + started.text)
 
     # --- admin: invites -----------------------------------------------------------------------
 
@@ -783,9 +835,10 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
     # Without this, updates are handled one at a time: an album's photos would be processed one by one
     # and a slow /login would hold up everyone else.
     app = Application.builder().token(token).concurrent_updates(True).build()
+    app.bot_data["flow"] = flow
     app.add_handler(CommandHandler("whoami", cmd_whoami, filters=private))
     for name in ("start", "help", "login", "link", "logout", "week", "today", "homework", "list", "search",
-                 "show", "delete", "retry", "quiz", "words", "cancel", "invite", "invites", "revoke"):
+                 "show", "delete", "retry", "quiz", "words", "remind", "cancel", "invite", "invites", "revoke"):
         app.add_handler(CommandHandler(name, command(name, secret=name in ("login", "link")), filters=private))
     app.add_handler(MessageHandler((filters.PHOTO | filters.Document.IMAGE) & private, on_media))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & private, on_text))
@@ -835,6 +888,10 @@ async def start_bot():
             await _publish_commands(app)
         except Exception:
             log.exception("Could not publish the command menu.")
+        send = lambda chat_id, text: app.bot.send_message(chat_id, text)
+        app.bot_data["tasks"] = [asyncio.create_task(scheduler.reminder_loop(app.bot_data["flow"], send))]
+        if scheduler.alerts_enabled():
+            app.bot_data["tasks"].append(asyncio.create_task(scheduler.alert_loop(send)))
         log.info("Telegram bot polling as @%s; %d admin(s).", app.bot.username, len(allowed_users()))
         return app
     except Exception:
@@ -846,6 +903,10 @@ async def stop_bot(app) -> None:
     if app is None:
         return
     try:
+        tasks = app.bot_data.get("tasks", [])
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
