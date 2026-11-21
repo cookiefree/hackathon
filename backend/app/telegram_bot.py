@@ -554,7 +554,8 @@ class Flow:
         with self._lock:
             s = self._s(uid)
             s.quiz, s.last_quiz, s.state = quiz, None, "quiz"
-        return Reply(f"Vocabulary test: {quiz.title}\n{len(quiz.cards)} words, {quiz.lang_ask} -> {quiz.lang_answer}. "
+        n = len(quiz.cards)
+        return Reply(f"Vocabulary test: {quiz.title}\n{n} word{'s' if n != 1 else ''}, {quiz.lang_ask} -> {quiz.lang_answer}. "
                      "Type the translation. Send ? to skip a word, /cancel to stop.\n\n" + self._question(quiz))
 
     @staticmethod

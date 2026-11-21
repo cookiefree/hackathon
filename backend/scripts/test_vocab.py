@@ -188,6 +188,11 @@ check("deleting the upload removes its word set", f.delete(111, str(m1.id)).text
       and vocab.set_for_material(m1.id, "tg:111") is None
       and not [r for r in vocab.items_of(sid)])
 
+one = vocab.Quiz(1, "t", "A", "B", [vocab.Card(1, "x", "y")])
+r1 = tb.Flow()._quiz_begin(111, one, False)
+check("a one-word test says '1 word', not '1 words'", "1 word," in r1.text and "1 words" not in r1.text)
+tb.Flow().cancel(111)
+
 # the menu
 names = [c for c, _ in tb.COMMANDS]
 check("/quiz and /words are in the menu and have handlers", {"quiz", "words"} <= set(names)
