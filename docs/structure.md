@@ -4,7 +4,7 @@ Companion to `idea.md`. What exists in the repo, how the parts connect, and what
 
 ## Decisions made
 - **Backend:** Python 3.11+, FastAPI, SQLite. One process serves the web page, the API, the Telegram bot and the photo-reading worker.
-- **Accounts:** sign in with a school (WebUntis) account. No passwords are stored. See "Accounts and security".
+- **Telegram is the main interface;** the website is optional. Accounts and access are described under "Accounts and security". No passwords are stored.
 - **Data is private by default.** Every upload has an owner, and each person only sees their own.
 - **Hosting for now:** one machine (a laptop or the desktop PC). The Telegram bot polls Telegram, so it needs no open port.
 - **Providers behind interfaces:** Untis (`real` or `mock`), LLM (`stub` only so far), photo reading (Gemini, opt-in).
@@ -20,10 +20,11 @@ hackathon/
 │   │   ├── main.py               FastAPI app and all HTTP endpoints; starts the bot and OCR backlog
 │   │   ├── config.py             reads .env, get(key, default)
 │   │   ├── db.py                 SQLite schema, migrations, connect()
-│   │   ├── auth.py               WebUntis login, sessions, per-user data cache, Telegram link codes
+│   │   ├── auth.py               WebUntis login, sessions, per-user data cache, Telegram accounts and invites, throttling
+│   │   ├── notify.py             hook: the OCR worker tells the bot a photo has been read
 │   │   ├── materials.py          upload validation, storage, search, vault notes, OCR results
 │   │   ├── models.py             pydantic models (Lesson, Homework, Exam, LessonNote, ...)
-│   │   ├── telegram_bot.py       bot conversation (Flow) plus python-telegram-bot handlers
+│   │   ├── telegram_bot.py       the bot: conversation and commands (Flow) plus python-telegram-bot handlers
 │   │   ├── untis/
 │   │   │   ├── base.py           UntisProvider interface
 │   │   │   ├── real.py           python-webuntis plus raw REST for homework
@@ -47,7 +48,7 @@ hackathon/
 └── README.md
 ```
 
-**Planned, not built:** a question-answering module over the materials, quiz and exam-prep generation, an Untis poller with Telegram alerts, an `ollama` or `llamacpp` LLM client, a share-with-my-Kurs switch. A separate branch, `llamacpp-provider`, holds an unmerged local llama-server client with quote checking; it touches `models.py`, `agent.py` and `main.py`, so expect conflicts when merging.
+**Planned, not built:** a question-answering module over the materials, quiz and exam-prep generation, an Untis poller with Telegram alerts (the bot is already the channel), an `ollama` or `llamacpp` LLM client, a share-with-my-Kurs switch. A separate branch, `llamacpp-provider`, holds an unmerged local llama-server client with quote checking; it touches `models.py`, `agent.py` and `main.py`, so expect conflicts when merging.
 
 ## Accounts and security
 
@@ -59,7 +60,12 @@ hackathon/
 - **HTTPS rule:** login is refused unless the request is HTTPS (via `X-Forwarded-Proto`) or goes straight to localhost. `ALLOW_INSECURE_LOGIN=1` overrides this.
 - **Fail closed:** `UNTIS_PROVIDER` must be set to `real` or `mock`. If it is not, login is disabled. `mock` accepts any username with the password `demo`.
 - **Ownership:** every materials query filters by the logged-in user's key. Another user's file returns 404.
-- **Telegram:** two ways in. A linked account (`/link CODE`, a one-time 10-minute code created on the website) acts as that user. IDs in `ALLOWED_USERS` act as their bare Telegram ID (admins). Everyone else is refused.
+- **Telegram access:** invite-only. `owner_for_telegram` gives a person an account, in this order: a linked website account (`/link CODE`, a one-time 10-minute code from the website); else `tg:<telegram id>` if they joined; else admins (`ALLOWED_USERS`) join automatically; else nobody. The bot ignores groups and channels.
+- **Invites:** `/invite` creates a code (default 25 uses, 14 days), shared as `https://t.me/<bot>?start=CODE`. Redeeming is one atomic update, so the use limit cannot be exceeded; revoked, used-up and expired codes are refused. Only admins can create, list or revoke.
+- **`/login` in Telegram:** same check and same throttling as the website, but stored under the person's own account key. The bot deletes the message first. If deleting fails it says so and asks the user to delete it. The password is never stored or logged; handler errors log only the exception type.
+- **Throttling:** 5 failures per 15 minutes per source (IP for the website, Telegram ID for the bot) and 20 per username, so one person's guesses cannot lock a classmate out. Link-code guessing is throttled per Telegram ID. Empty entries are pruned.
+- **Abuse limits:** 20 photos or 80 MB held per person while answering the Kurs question (dropped after 30 idle minutes), 500 uploads per person, Kurs names must start with a letter or digit and are checked to stay inside the vault folder.
+- **Logs:** the HTTP libraries are set to WARNING, because Telegram request URLs contain the bot token.
 
 ## Data model (SQLite, `data/app.db`)
 
@@ -69,8 +75,10 @@ hackathon/
 | `materials_fts` | FTS5 index over title and text; its rowid is the material id |
 | `sessions` | `token_hash`, `user_key`, `created`, `expires` |
 | `user_data` | `user_key`, `name` (timetable or homework), `json`, `fetched` |
-| `link_codes` | one-time codes to connect a Telegram account |
+| `link_codes` | one-time codes to connect a Telegram account to a website account |
 | `telegram_links` | `telegram_id` to `user_key` |
+| `telegram_users` | people who joined the bot (`telegram_id`, `joined`, `via` = the invite code or `admin`) |
+| `invites` | `code`, `created`, `expires`, `max_uses`, `uses`, `revoked` |
 
 Older databases are migrated on start (owner and visibility, then `ocr_status`). Photos live at `data/uploads/<sha256>.<ext>`. The vault note for each photo is `vault/<Kurs>/<date> <kind> <id>.md`, with the image copied to `vault/_attachments/`.
 
@@ -118,7 +126,9 @@ Uploads accept JPEG, PNG and WebP up to 15 MB, checked from the file's bytes, no
 2. **Upload (web or Telegram):** validate, store the file, insert the row with `ocr_status` `pending` (or `off`), write the vault note, return. The bot asks for Kurs (buttons from recent uploads and the user's timetable) and kind.
 3. **Read:** the worker takes one photo at a time, calls Gemini, blanks name fields, stores the text, updates search and the vault note. Failures are marked `failed` and can be retried. On start, photos that were never read are queued.
 4. **Search:** a prefix full-text query over the owner's materials.
-5. **Link Telegram:** the website shows a code, the user sends `/link CODE` to the bot, earlier uploads made under their bare Telegram ID move to the account.
+5. **Join:** an admin runs `/invite`; the classmate opens the link, which sends `/start CODE`; the bot registers them. Optionally they run `/login` to load their timetable and homework, which also gives Kurs buttons.
+6. **Photo read:** the worker finishes, `notify` calls the bot, and the bot messages the owner (only for photos uploaded through Telegram).
+7. **Link to a website account (optional):** the website shows a code, the user sends `/link CODE`, and earlier uploads under `tg:<id>` move to that account.
 
 ## Config (`.env`)
 
@@ -127,12 +137,29 @@ Uploads accept JPEG, PNG and WebP up to 15 MB, checked from the file's bytes, no
 | `UNTIS_SERVER`, `UNTIS_SCHOOL`, `UNTIS_CLIENT` | which WebUntis to log in against |
 | `UNTIS_PROVIDER` | `real` or `mock`. Required. |
 | `UNTIS_USER`, `UNTIS_PASSWORD` | only used by `scripts/test_untis.py` and as the default for `RealUntisProvider()` |
-| `TELEGRAM_TOKEN`, `ALLOWED_USERS`, `TELEGRAM_ENABLED` | bot token, admin Telegram IDs, set `0` to not start the bot |
+| `TELEGRAM_TOKEN`, `ALLOWED_USERS`, `TELEGRAM_ENABLED` | bot token, admin Telegram IDs (comma-separated), set `0` to not start the bot |
+| `MAX_UPLOADS_PER_USER` | upload cap per person (default 500) |
 | `OCR_PROVIDER` | `gemini` to turn photo reading on (default off) |
 | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_TIMEOUT` | key, model (default `gemini-3.5-flash-lite`), seconds per photo |
 | `LLM_PROVIDER` | `stub` (only option so far) |
 | `DATA_DIR`, `DB_PATH`, `VAULT_PATH` | where data lives (defaults inside the repo) |
 | `ALLOW_INSECURE_LOGIN` | `1` allows login over plain HTTP. Do not use on a shared network. |
+
+## Telegram commands
+
+| Command | Who | What it does |
+|---|---|---|
+| `/start CODE` | anyone | join with an invite; already-joined users get the help text |
+| `/whoami` | anyone | shows the Telegram ID (used to set up admins) |
+| `/login user password`, `/logout` | joined | connect or forget the school account (schedule, homework, Kurs buttons) |
+| `/week [next]`, `/today`, `/homework` | joined, after `/login` | the person's own cached Untis data |
+| *send a photo or an album* | joined | asks for the Kurs (buttons, or type it) and kind, then files them |
+| `/search words`, `/list`, `/show N`, `/delete N`, `/retry N` | joined | work on the person's own uploads |
+| `/cancel`, `/help` | joined | drop pending photos; help |
+| `/link CODE` | anyone with a website code | connect a website account (not in the menu) |
+| `/invite [N]`, `/invites`, `/revoke CODE` | admins | manage invite links |
+
+The menu Telegram shows when typing `/` comes from `COMMANDS` and `ADMIN_COMMANDS` in `telegram_bot.py`, published at startup with `setMyCommands` (admins get a longer list through a per-chat scope). `Flow` holds all the logic and has no Telegram imports, which is why `test_bot_flow.py` can test it offline.
 
 ## Legacy (transcription path)
 
@@ -149,7 +176,7 @@ Uploads accept JPEG, PNG and WebP up to 15 MB, checked from the file's bytes, no
 
 ## Open questions
 - Which LLM answers questions: Gemini, Claude, or a local llama.cpp server on the desktop PC?
-- How do other people reach it: an HTTPS tunnel from one machine, or something hosted? And should it be open beyond the team?
+- Where does the bot run for the demo and after: this laptop, or the desktop PC? Only one machine may run it, and it must stay on.
 - Sharing within a Kurs: opt-in per photo, what redaction is required first, and who can take material down?
 - Does the school allow logging in through WebUntis's unofficial API from a third-party site?
 - Exam dates are not readable from Untis for students. Entered by hand, or read from uploaded exams and worksheets?
