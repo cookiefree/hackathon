@@ -140,7 +140,8 @@ def recent_kurse(owner: str, limit: int = 6) -> list[str]:
     return [r["kurs"] for r in rows]
 
 
-def file_path(material_id: int) -> Path | None:
+def file_owner_path(material_id: int, owner: str) -> Path | None:
+    """The stored file, but only if it belongs to this owner."""
     with connect() as con:
-        row = con.execute("SELECT path FROM materials WHERE id=?", (material_id,)).fetchone()
+        row = con.execute("SELECT path FROM materials WHERE id=? AND owner=?", (material_id, owner)).fetchone()
     return DATA_DIR / row["path"] if row else None

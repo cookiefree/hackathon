@@ -1,48 +1,35 @@
 import logging
-import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from app import auth
 from app.agent.agent import extract_note
+from app.auth import current_user
 from app.crosscheck import cross_check
 from app.llm import get_llm
-from app.materials import MAX_BYTES, Material, UploadError, file_path, list_materials, save_upload
-from app.models import Analysis
+from app.materials import MAX_BYTES, Material, UploadError, file_owner_path, list_materials, save_upload
+from app.models import Analysis, Homework, Lesson
 from app.telegram_bot import start_bot, stop_bot
-from app.untis import get_provider
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s: %(message)s")
 
 WEB = Path(__file__).resolve().parents[2] / "web"
-
-_kurse_cache: tuple[float, list[str]] = (0.0, [])
-
-
-def kurs_suggestions() -> list[str]:
-    """Course codes from this and next week's timetable, cached for 10 minutes."""
-    global _kurse_cache
-    if time.time() - _kurse_cache[0] > 600:
-        start, end = _week(0)
-        codes = {l.subject for l in untis.timetable(start, end + timedelta(days=7))}
-        _kurse_cache = (time.time(), sorted(codes))
-    return _kurse_cache[1]
+llm = get_llm()
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    bot = await start_bot(kurs_suggestions)
+    bot = await start_bot()
     yield
     await stop_bot(bot)
 
 
 app = FastAPI(title="School second brain", lifespan=lifespan)
-untis = get_provider()
-llm = get_llm()
 
 
 def _week(offset: int) -> tuple[date, date]:
@@ -50,17 +37,94 @@ def _week(offset: int) -> tuple[date, date]:
     return monday, monday + timedelta(days=6)
 
 
+# --- login -----------------------------------------------------------------------------------
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/login")
+def login(req: LoginRequest, request: Request, response: Response):
+    try:
+        auth.login(request, response, req.username, req.password)
+    except auth.AuthError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    return {"ok": True}
+
+
+@app.post("/api/logout")
+def logout(request: Request, response: Response):
+    auth.logout(request, response)
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def me(user: str = Depends(current_user)):
+    _, fetched = auth.user_data(user, "timetable")
+    return {"kurse": auth.kurse_of(user), "data_from": fetched,
+            "telegram_linked": _linked(user)}
+
+
+def _linked(user: str) -> bool:
+    from app.db import connect
+    with connect() as con:
+        return con.execute("SELECT 1 FROM telegram_links WHERE user_key=?", (user,)).fetchone() is not None
+
+
+@app.post("/api/link-code")
+def link_code(user: str = Depends(current_user)):
+    return {"code": auth.new_link_code(user), "minutes": auth.LINK_CODE_MINUTES}
+
+
+# --- the user's own Untis data (fetched when they logged in) ---------------------------------
+
+def _lessons(user: str) -> list[Lesson]:
+    return [Lesson.model_validate(x) for x in auth.user_data(user, "timetable")[0]]
+
+
+def _homework(user: str) -> list[Homework]:
+    return [Homework.model_validate(x) for x in auth.user_data(user, "homework")[0]]
+
+
 @app.get("/api/timetable")
-def timetable(week: int = 0):
+def timetable(week: int = 0, user: str = Depends(current_user)):
     start, end = _week(week)
-    return {"start": start, "end": end, "lessons": untis.timetable(start, end)}
+    lessons = [l for l in _lessons(user) if start <= l.start.date() <= end]
+    return {"start": start, "end": end, "lessons": sorted(lessons, key=lambda l: l.start)}
 
 
 @app.get("/api/homework")
-def homework():
-    today = date.today()
-    return untis.homework(today - timedelta(days=14), today + timedelta(days=28))
+def homework(user: str = Depends(current_user)):
+    return _homework(user)
 
+
+# --- the user's materials --------------------------------------------------------------------
+
+@app.post("/api/materials", response_model=Material)
+def upload_material(file: UploadFile = File(...), kurs: str = Form(...), kind: str = Form(...),
+                    title: str = Form(""), user: str = Depends(current_user)):
+    data = file.file.read(MAX_BYTES + 1)
+    try:
+        return save_upload(data, file.filename or "", kurs, kind, title, owner=user)
+    except UploadError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+
+
+@app.get("/api/materials", response_model=list[Material])
+def materials(kurs: str | None = None, user: str = Depends(current_user)):
+    return list_materials(kurs, owner=user)
+
+
+@app.get("/api/materials/{material_id}/file")
+def material_file(material_id: int, user: str = Depends(current_user)):
+    path = file_owner_path(material_id, user)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="No such material.")
+    return FileResponse(path)
+
+
+# --- analysis (transcript -> note), still available over the API -----------------------------
 
 class AnalyzeRequest(BaseModel):
     transcript: str
@@ -68,38 +132,14 @@ class AnalyzeRequest(BaseModel):
 
 
 @app.post("/api/analyze", response_model=Analysis)
-def analyze(req: AnalyzeRequest):
-    today = date.today()
-    lesson = untis.lesson_at(req.at or datetime.now())
-    known = untis.homework(today - timedelta(days=14), today + timedelta(days=28))
+def analyze(req: AnalyzeRequest, user: str = Depends(current_user)):
+    when = req.at or datetime.now()
+    lesson = next((l for l in _lessons(user) if l.start <= when < l.end), None)
+    known = _homework(user)
     if lesson:
-        same = [h for h in known if h.subject == lesson.subject]
-        known = same or known
+        known = [h for h in known if h.subject == lesson.subject] or known
     note = extract_note(llm, req.transcript, lesson, known)
     return Analysis(lesson=lesson, note=note, crosscheck=cross_check(note, known), llm=llm.name)
-
-
-@app.post("/api/materials", response_model=Material)
-def upload_material(file: UploadFile = File(...), kurs: str = Form(...), kind: str = Form(...),
-                    title: str = Form("")):
-    data = file.file.read(MAX_BYTES + 1)
-    try:
-        return save_upload(data, file.filename or "", kurs, kind, title)
-    except UploadError as e:
-        raise HTTPException(status_code=e.status, detail=str(e))
-
-
-@app.get("/api/materials", response_model=list[Material])
-def materials(kurs: str | None = None):
-    return list_materials(kurs)
-
-
-@app.get("/api/materials/{material_id}/file")
-def material_file(material_id: int):
-    path = file_path(material_id)
-    if path is None or not path.exists():
-        raise HTTPException(status_code=404, detail="No such material.")
-    return FileResponse(path)
 
 
 @app.get("/")

@@ -1,5 +1,8 @@
 """Telegram front door: send photos, pick Kurs and kind, they land in the materials DB.
 
+Who may use it: anyone who has linked their school login (log in on the website, tap "link telegram",
+send `/link CODE` here), plus Telegram IDs listed in ALLOWED_USERS (admins, no school login needed).
+
 Two layers. `Flow` is the conversation (plain Python, no Telegram, easy to test).
 The python-telegram-bot handlers below it only translate messages to and from Flow.
 Access is an allowlist (ALLOWED_USERS in .env). Empty list = nobody can upload.
@@ -9,7 +12,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from app import config
+from app import auth, config
 from app.materials import KINDS, KURS_RE, UploadError, list_materials, recent_kurse, save_upload
 
 log = logging.getLogger(__name__)
@@ -19,7 +22,7 @@ HELP = (
     "I'll ask which Kurs and what kind, then file them.\n\n"
     "Tip: send exams as a File (paperclip > File), not as a Photo. "
     "Telegram squashes photos and the text gets hard to read.\n\n"
-    "/list  your recent uploads\n/cancel  drop the photos I'm holding\n/whoami  show your Telegram ID"
+    "/list  your recent uploads\n/cancel  drop the photos I'm holding\n/link CODE  connect your school login (get the code on the website)\n/whoami  show your Telegram ID"
 )
 
 
@@ -51,14 +54,22 @@ def _rows(labels: list[str], per_row: int = 3) -> list[list[tuple[str, str]]]:
 
 
 class Flow:
-    def __init__(self, kurs_source: Callable[[], list[str]] | None = None) -> None:
+    def __init__(self, kurs_source: Callable[[str], list[str]] | None = None) -> None:
         self.sessions: dict[int, Session] = {}
-        self.kurs_source = kurs_source        # e.g. course codes from the Untis timetable
+        self.kurs_source = kurs_source or auth.kurse_of   # owner -> course codes from their own timetable
+
+    def resolve(self, uid: int) -> str | None:
+        """The account this Telegram user acts as, or None if they may not use the bot."""
+        linked = auth.linked_user(uid)
+        if linked:
+            return linked
+        return str(uid) if uid in allowed_users() else None
 
     def _suggestions(self, uid: int, limit: int = 12) -> list[str]:
-        names = recent_kurse(str(uid))
+        owner = self.resolve(uid) or str(uid)
+        names = recent_kurse(owner)
         try:
-            extra = self.kurs_source() if self.kurs_source else []
+            extra = self.kurs_source(owner)
         except Exception:
             log.exception("could not load Kurs suggestions")
             extra = []
@@ -70,7 +81,14 @@ class Flow:
 
     @staticmethod
     def refuse(uid: int) -> Reply:
-        return Reply(f"You're not on the list yet. Send this number to the person running the bot: {uid}")
+        return Reply("You're not signed in yet. Log in on the website with your school account, "
+                     "tap 'link telegram', and send me /link followed by the code.")
+
+    def link(self, uid: int, code: str) -> Reply:
+        user = auth.link_telegram(uid, code.strip())
+        if user is None:
+            return Reply("That code is wrong or expired. Get a new one on the website.")
+        return Reply("Linked. Your uploads here and on the website are now the same account. Send me a photo.")
 
     def whoami(self, uid: int) -> Reply:
         return Reply(f"Your Telegram ID is {uid}")
@@ -119,11 +137,14 @@ class Flow:
     def _save(self, uid: int, kind: str) -> Reply:
         s = self._s(uid)
         kurs, items = s.kurs, s.pending
+        owner = self.resolve(uid)
         self.sessions.pop(uid, None)
+        if owner is None:
+            return self.refuse(uid)
         saved, dup, errors = [], 0, []
         for data, name in items:
             try:
-                m = save_upload(data, name, kurs, kind, owner=str(uid))
+                m = save_upload(data, name, kurs, kind, owner=owner)
                 if m.duplicate:
                     dup += 1
                 else:
@@ -144,7 +165,7 @@ class Flow:
         return Reply("Dropped. Nothing was saved.")
 
     def list_mine(self, uid: int) -> Reply:
-        ms = list_materials(owner=str(uid), limit=10)
+        ms = list_materials(owner=self.resolve(uid) or str(uid), limit=10)
         if not ms:
             return Reply("You haven't uploaded anything yet.")
         return Reply("\n".join(f"#{m.id}  {m.kurs}  {m.kind}  {m.created[:10]}  {m.title or m.filename}" for m in ms))
@@ -164,7 +185,7 @@ async def _send(target, reply: Reply) -> None:
     await target.reply_text(reply.text, reply_markup=markup)
 
 
-def build_application(token: str, kurs_source: Callable[[], list[str]] | None = None):
+def build_application(token: str, kurs_source: Callable[[str], list[str]] | None = None):
     from telegram import Update
     from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
                               MessageHandler, filters)
@@ -173,7 +194,7 @@ def build_application(token: str, kurs_source: Callable[[], list[str]] | None = 
     groups: dict[str, list] = {}          # media_group_id -> collected items
 
     def ok(update: Update) -> bool:
-        return update.effective_user is not None and update.effective_user.id in allowed_users()
+        return update.effective_user is not None and flow.resolve(update.effective_user.id) is not None
 
     async def gate(update: Update) -> bool:
         if ok(update):
@@ -183,6 +204,14 @@ def build_application(token: str, kurs_source: Callable[[], list[str]] | None = 
 
     async def cmd_whoami(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _send(update.effective_message, flow.whoami(update.effective_user.id))
+
+    async def cmd_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        code = ctx.args[0] if ctx.args else ""
+        await _send(update.effective_message, await asyncio.to_thread(flow.link, update.effective_user.id, code))
+        try:                                   # the code is a credential: remove it from the chat
+            await update.effective_message.delete()
+        except Exception:
+            pass
 
     async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if await gate(update):
@@ -246,6 +275,7 @@ def build_application(token: str, kurs_source: Callable[[], list[str]] | None = 
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("whoami", cmd_whoami))
+    app.add_handler(CommandHandler("link", cmd_link))
     app.add_handler(CommandHandler(["start", "help"], cmd_start))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
@@ -256,7 +286,7 @@ def build_application(token: str, kurs_source: Callable[[], list[str]] | None = 
     return app
 
 
-async def start_bot(kurs_source: Callable[[], list[str]] | None = None):
+async def start_bot(kurs_source: Callable[[str], list[str]] | None = None):
     """Start polling if TELEGRAM_TOKEN is set. Never raises: the web app must come up either way."""
     token = config.get("TELEGRAM_TOKEN")
     if not token or config.get("TELEGRAM_ENABLED", "1") == "0":

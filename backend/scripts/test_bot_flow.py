@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db import connect                      # noqa: E402
 from app.materials import list_materials        # noqa: E402
+from app import auth                             # noqa: E402
 from app.telegram_bot import Flow, allowed_users  # noqa: E402
 
 
@@ -50,9 +51,9 @@ check("migration keeps old row, owner=local, visibility=private",
       row and row["title"] == "old" and row["owner"] == "local" and row["visibility"] == "private")
 
 # 2. conversation
-f = Flow(kurs_source=lambda: ["E5-GK3", "M-GK4", "?", "bad,code"])
+f = Flow(kurs_source=lambda owner: ["E5-GK3", "M-GK4", "?", "bad,code"])
 check("allowlist parsed", allowed_users() == {111, 222})
-check("refusal shows the user's id", "999" in f.refuse(999).text)
+check("refusal explains how to sign in", "link" in f.refuse(999).text and f.resolve(999) is None)
 check("whoami shows id", "111" in f.whoami(111).text)
 
 r = f.on_files(333, [(png((7, 7, 7)), "z.png")])
@@ -96,6 +97,25 @@ f.on_files(111, [(png((5, 5, 5)), "c.png")]); r = f.cancel(111)
 check("cancel drops pending", "Nothing was saved" in r.text and 111 not in f.sessions)
 check("/list text", "#" in f.list_mine(111).text and "haven't" in f.list_mine(333).text)
 check("stray text with no session", "Send me a photo" in f.on_text(111, "hello").text)
+
+# 3. linking a school account
+user = "hpg:5:42"
+r = f.link(555, "000000")
+check("wrong code rejected", "wrong or expired" in r.text and f.resolve(555) is None)
+f.on_files(111, [(png((4, 4, 4)), "d.png")]); f.on_text(111, "PH-GK1"); f.on_choice(111, "kind:board")
+with connect() as con:
+    con.execute("UPDATE materials SET owner='555' WHERE title='old'")   # pretend 555 uploaded before linking
+code = auth.new_link_code(user)
+r = f.link(555, code)
+check("valid code links the account", "Linked" in r.text and f.resolve(555) == user)
+check("earlier uploads were adopted", len(list_materials(owner=user)) == 1 and not list_materials(owner="555"))
+check("code is single use", "wrong or expired" in f.link(556, code).text and f.resolve(556) is None)
+with connect() as con:
+    con.execute("INSERT INTO link_codes VALUES ('111111', ?, '2000-01-01T00:00:00')", (user,))
+check("expired code rejected", "wrong or expired" in f.link(557, "111111").text)
+r = f.on_files(555, [(png((8, 8, 8)), "e.png")]); f.on_text(555, "M-GK4"); r = f.on_choice(555, "kind:exam")
+check("linked user saves under the account key", len(list_materials(owner=user)) == 2)
+check("linked user's /list shows their uploads", "M-GK4" in f.list_mine(555).text)
 
 print("\nFAILED: " + ", ".join(failures) if failures else "\nall passed")
 sys.exit(1 if failures else 0)

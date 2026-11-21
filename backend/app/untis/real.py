@@ -23,17 +23,31 @@ def _at(day: date, hhmm: int) -> datetime:
 class RealUntisProvider(UntisProvider):
     """WebUntis via python-webuntis (timetable, exams) plus the raw REST API (homework)."""
 
-    def __init__(self) -> None:
+    def __init__(self, username: str | None = None, password: str | None = None) -> None:
+        """Credentials default to the ones in .env; the login flow passes a visitor's own."""
         self.server = config.get("UNTIS_SERVER")
         self.school = config.get("UNTIS_SCHOOL")
         self._session = webuntis.Session(
             server=self.server,
             school=self.school,
-            username=config.get("UNTIS_USER"),
-            password=config.get("UNTIS_PASSWORD"),
+            username=username if username is not None else config.get("UNTIS_USER"),
+            password=password if password is not None else config.get("UNTIS_PASSWORD"),
             useragent=config.get("UNTIS_CLIENT", "hackathon"),
         )
         self._http: requests.Session | None = None
+
+    def identity(self) -> tuple[int, int]:
+        """(person id, person type) of whoever these credentials belong to. Raises on bad credentials."""
+        self._ensure()
+        r = self._session.login_result
+        return int(r["personId"]), int(r["personType"])
+
+    def close(self) -> None:
+        try:
+            self._session.logout()
+        except Exception:
+            pass
+        self._http = None
 
     def _login(self) -> None:
         self._session.login()
