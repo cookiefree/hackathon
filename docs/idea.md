@@ -34,7 +34,7 @@ A loop: **send in -> file -> read -> find, ask, prepare -> revise**, tied to the
 See the README for details and limits.
 
 ## Interaction
-- **Telegram bot (the main interface):** open an invite link to join, send photos, pick the Kurs and kind with buttons, get a confirmation and, later, a message when the photo has been read. Commands for the schedule, homework, search, reading a photo's text, and deleting uploads, all in the `/` menu. Later: alerts for Entfall, substitutions and new homework, and quiz questions as chat messages.
+- **Telegram bot (the main interface):** open an invite link to join, send photos, pick the Kurs and kind with buttons, get a confirmation and, later, a message when the photo has been read. Commands for the schedule, homework, search, reading a photo's text, and deleting uploads, all in the `/` menu. The admin also gets alerts when the Untis timetable changes (Entfall, substitutions, room changes, new homework). Later: quiz questions as chat messages.
 - **Website (optional):** log in with the school account, see your week and open homework, upload photos (drop area, several at once, camera button on phones), browse and search your materials. It only listens on the machine that runs it.
 - **Obsidian (optional):** a folder of Markdown notes, one per photo, with the image embedded. A reading view for one person's own data, not the main interface.
 

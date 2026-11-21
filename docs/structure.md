@@ -22,6 +22,7 @@ hackathon/
 │   │   ├── db.py                 SQLite schema, migrations, connect()
 │   │   ├── auth.py               WebUntis login, sessions, per-user data cache, Telegram accounts and invites, throttling
 │   │   ├── notify.py             hook: the OCR worker tells the bot a photo has been read
+│   │   ├── alerts.py             Untis change alerts for the admin (checks the .env account every few minutes)
 │   │   ├── materials.py          upload validation, storage, search, vault notes, OCR results
 │   │   ├── vocab.py              vocabulary tests: read word pairs from a photo, answer checking, quiz rounds
 │   │   ├── models.py             pydantic models (Lesson, Homework, Exam, LessonNote, ...)
@@ -43,7 +44,8 @@ hackathon/
 │       ├── test_untis.py         login check with the credentials in .env
 │       ├── test_bot_flow.py      offline: migration, conversation, linking
 │       ├── test_ocr.py           offline: worker, statuses, search, redaction
-│       └── test_vocab.py         offline: answer checking, word sets, the quiz conversation
+│       ├── test_vocab.py         offline: answer checking, word sets, the quiz conversation
+│       └── test_alerts.py        offline: what counts as a change, when alerts run, the polling loop
 ├── web/index.html                single-page UI: login, schedule, homework, upload, materials, search
 ├── data/                         SQLite file and uploaded photos (gitignored)
 ├── vault/                        generated Obsidian notes (gitignored, rebuildable)
@@ -51,7 +53,7 @@ hackathon/
 └── README.md
 ```
 
-**Planned, not built:** a question-answering module over the materials, quiz and exam-prep generation, an Untis poller with Telegram alerts (the bot is already the channel), an `ollama` or `llamacpp` LLM client, a share-with-my-Kurs switch. A separate branch, `llamacpp-provider`, holds an unmerged local llama-server client with quote checking; it touches `models.py`, `agent.py` and `main.py`, so expect conflicts when merging.
+**Planned, not built:** a question-answering module over the materials, quiz and exam-prep generation, an `ollama` or `llamacpp` LLM client, a share-with-my-Kurs switch. A separate branch, `llamacpp-provider`, holds an unmerged local llama-server client with quote checking; it touches `models.py`, `agent.py` and `main.py`, so expect conflicts when merging.
 
 ## Accounts and security
 
@@ -144,6 +146,7 @@ Uploads accept JPEG, PNG and WebP up to 15 MB, checked from the file's bytes, no
 | `UNTIS_USER`, `UNTIS_PASSWORD` | only used by `scripts/test_untis.py` and as the default for `RealUntisProvider()` |
 | `TELEGRAM_TOKEN`, `ALLOWED_USERS`, `TELEGRAM_ENABLED` | bot token, admin Telegram IDs (comma-separated), set `0` to not start the bot |
 | `MAX_UPLOADS_PER_USER` | upload cap per person (default 500) |
+| `ALERTS`, `ALERT_MINUTES`, `ALERT_TELEGRAM_ID` | Untis alerts: on by default (`ALERTS=off` disables), check interval (default 10), recipient (default the first admin) |
 | `OCR_PROVIDER` | `gemini` to turn photo reading on (default off) |
 | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_TIMEOUT` | key, model (default `gemini-3.5-flash-lite`), seconds per photo |
 | `LLM_PROVIDER` | `stub` (only option so far) |
@@ -171,6 +174,12 @@ The menu Telegram shows when typing `/` comes from `COMMANDS` and `ADMIN_COMMAND
 
 `vocab.py` has three parts. **Reading:** `gemini.extract_json` sends the photo with a fixed schema (front, back, plus the two language names) and gets structured JSON back, so the columns of a vocab table are read as columns. The result is cleaned (duplicates, pairs with a missing side and over-long entries dropped, at most 200 words) and stored once per upload. Reading new pages is rate-limited per person (`VOCAB_BUILD_LIMIT` per 15 minutes) because each is a paid call. **Checking:** `check_answer` returns correct, close or wrong. Case, punctuation and ß/ss are ignored; text in parentheses and comma, slash or semicolon alternatives are optional; an article may be left out (a note says so) but not swapped for a different one; accents and a one-letter typo (two for words of 9+ letters) count as close; words of 4 letters or fewer must be exact. **Quiz:** a round is up to 25 words, picked by lowest right-minus-missed score (random tie-break) and then shuffled. State lives in the chat session (`Session.quiz`, kept 30 idle minutes); every answer updates the word's counters; the end screen offers `quiz:missed` and `quiz:again` buttons.
 
+## Untis alerts
+
+`alerts.py` checks the Untis account in `.env` every `ALERT_MINUTES` (default 10) and sends the admin one message per batch of changes: **Entfall** (a lesson became cancelled), **On again**, **Substitution** (new teacher), **Room change**, and **New homework**. Each check takes a snapshot of the next 14 days of lessons and the open homework, stores it (`user_data`, key `system` / `alert_snapshot`) and diffs it against the previous one. The first check only records a baseline. A day that newly comes into view only counts as news if it is already cancelled. A failed check is logged by exception type and the loop carries on.
+
+It is **on by default** whenever `UNTIS_PROVIDER=real`, `UNTIS_USER` and `UNTIS_PASSWORD` are set, and an admin ID exists (`ALERTS=off` turns it off). It can only watch that one account: everyone else's schedule is a snapshot from their last `/login`, because their passwords are never stored.
+
 ## Legacy (transcription path)
 
 `llm/`, `agent/agent.py`, `crosscheck.py` and `POST /api/analyze` turn a pasted lesson transcript into a structured note and mark spoken homework as in or not in Untis. They run on the keyword stub, are no longer shown on the page, and are kept because the same extraction and matching ideas will be needed for questions over materials.
@@ -181,7 +190,7 @@ The menu Telegram shows when typing `/` comes from `COMMANDS` and `ADMIN_COMMAND
 |---|---|
 | Ask and prepare | `LLMClient` for Gemini or a local model, retrieval over `materials`, answers with citations, mock exams, revision plan |
 | Photos | reading quality, redaction beyond name fields, board photos and book pages, sharing within a Kurs |
-| Access | HTTPS tunnel, hosting, Untis poller and Telegram alerts |
+| Access | HTTPS tunnel, hosting |
 | Demo | web polish, pitch, demo data |
 
 ## Open questions

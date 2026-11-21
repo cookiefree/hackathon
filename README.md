@@ -1,70 +1,94 @@
-# Timetable-aware second brain for school
+<p align="center">
+  <a href="https://t.me/untisianbot"><img src="docs/untisian.svg" width="160" alt="Untisian logo"></a>
+</p>
 
-Loop: lesson -> notes -> tasks -> revision, driven by an agent that knows the WebUntis timetable.
-See `docs/idea.md` for the pitch and `docs/structure.md` for the planned layout.
+<h1 align="center"><a href="https://t.me/untisianbot">Untisian</a></h1>
 
-**Current direction:** a database of school materials (exams, worksheets, book pages, board photos) that students send in by photo to a **Telegram bot**, which an AI will later search and turn into answers and exam prep. Telegram is the product; the website is an optional extra. Lesson transcription is no longer the focus. `docs/idea.md` and `docs/structure.md` still describe the older transcription-first plan and haven't been updated yet.
+<p align="center">
+  A Telegram bot for school. Send it photos of your study material, and it reads them, finds them again, and quizzes you on vocabulary. It also knows your WebUntis timetable.<br>
+  <a href="https://t.me/untisianbot"><b>@untisianbot</b></a> · invite-only
+</p>
 
-## Progress
+---
 
-![Schedule page](docs/schedule.png)
+## What it does
 
-**Done**
-- Idea and project structure documented (`docs/`).
-- **Accounts** (`backend/app/auth.py`). In Telegram a person joins with an invite link and can connect a school (WebUntis) account with `/login`, for **any school on WebUntis**: the bot asks for the school (searching WebUntis's public school list and showing numbered matches), then the username, then the password, one message each. On the website they sign in with the same school account. Either way the password is checked once with WebUntis and is never stored or logged, each person sees only their own schedule, homework and uploads, failed logins are rate-limited (per source, with a higher per-username limit so nobody can lock a classmate out), and website login is refused over plain HTTP except on localhost.
-- Untis provider layer (`backend/app/untis/`): `real` and `mock` behind one interface, with timetable (rooms, cancellations, substitution notes), homework and `lesson_at(time)`.
-- Terminal-style web page (`web/index.html`): login, the user's week schedule, open homework, photo upload (drop area, several photos, camera button on phones), the materials list with reading status, and a search box.
-- **Photo uploads** from the web page and from a Telegram bot (`@untisianbot`). Photos are stored in `data/uploads/`, indexed in SQLite (`data/app.db`) with an owner, a Kurs and a kind (exam, worksheet, book, board, notes, vocab), and mirrored as Markdown notes into an Obsidian vault (`vault/`, optional, rebuildable from the DB).
-- **Telegram bot** (`@untisianbot`, `backend/app/telegram_bot.py`), the main interface:
-  - **Invite links:** an admin sends `/invite` and gets `https://t.me/<bot>?start=CODE`, with a use limit and a 14-day expiry (`/invites`, `/revoke`). Anyone else is told the bot is invite-only. Admins are the Telegram IDs in `ALLOWED_USERS`.
-  - **Uploading:** send photos (best as a File, not a Photo), tap or type the Kurs (buttons come from the person's own timetable once they have logged in), tap the kind. Albums are handled as one batch. Limits: 20 photos at a time, 500 per person.
-  - **Commands:** `/week`, `/today`, `/homework`, `/search`, `/list`, `/show 12` (the text of a photo), `/delete 12`, `/retry 12`, `/quiz 12`, `/words 12`, `/login`, `/logout`, `/cancel`, `/help`. They appear in Telegram's `/` menu, and admins also see the invite commands.
-  - **Notifications:** when a photo has been read, the bot sends a message. Everything works only in private chats.
-  - Website accounts can be connected with `/link CODE` (hidden from the menu).
-- **Vocabulary tests** (`backend/app/vocab.py`): photograph a vocab page and send it as kind `vocab`. `/quiz 12` has Gemini read the word pairs straight from the photo (layout matters, so not from the OCR text), then the bot asks them one by one and you type the translation. Answers are checked leniently (accents, a missing article, ß/ss, one typo in words of 5+ letters all count, with a note; a wrong article does not). `?` skips, `/cancel` stops, and at the end there are buttons to practise only the words you missed or go again. Each word keeps a right/missed count, and words you miss more often come up first. `/quiz 12 reverse` asks the other direction, `/words 12` lists the pairs found. Works for any language pair.
-- **Reading text from photos** (`backend/app/ocr/`): with `OCR_PROVIDER=gemini` a background worker sends each photo to the Gemini API (default `gemini-3.5-flash-lite`, about 1 s per photo in testing), stores the text, and makes it searchable (`/api/search`). Failed reads can be retried. Student name fields are blanked in the text on a best-effort basis.
-- Agent core: send a lesson transcript to `/api/analyze` (login required) and get a structured note plus a homework cross-check against Untis. Runs behind a stub LLM for now (`LLM_PROVIDER=stub`), so it costs nothing; real models plug in via the `LLMClient` interface. No longer shown on the page.
-- Offline tests in `backend/scripts/`: `test_bot_flow.py` (about 110 checks: migration, invites, accounts, the guided `/login` and school search, the commands, ownership, throttling, upload limits, the command menu) and `test_ocr.py` (worker, statuses, search, redaction) and `test_vocab.py` (answer checking, building word sets, the quiz conversation, limits).
-- A security review of the password and account code found and fixed: the bot token appearing in logs, albums being handled one photo at a time, lockout abuse, a vault path-traversal case, and several limits.
+**Keeps your material.** Photograph a worksheet, a corrected exam, a book page or the board and send it in. Pick the Kurs and what kind of material it is, and the bot files it. Only you can see your uploads.
 
-**Known limits**
-- **The Telegram bot works from anywhere** (it connects outward, so no tunnel is needed) **but only while the machine running it is on.** The website only listens on localhost; opening it to others would need an HTTPS tunnel (e.g. Cloudflare Tunnel), and its login refuses plain HTTP.
-- **Collecting school passwords is a real risk** even though they are not stored. With `/login` the password passes through Telegram's servers (bot chats are not end-to-end encrypted) and sits in the chat until the bot deletes the message. The app also uses WebUntis's unofficial API. `/login` is optional and warns about this first; check with the school before opening the bot beyond a small trusted group.
-- **Photo reading is opt-in and sends photos to Google.** Check your key's tier first (on the free tier Google may use content to improve its products). Name hiding only covers name fields like `Name: ...`; signatures, margins and names in the body are not caught, and the stored photo itself is unchanged.
-- Schedule and homework are a snapshot taken when the user logs in; log in again to refresh.
-- Student accounts can't read exams from Untis (`no right for getExams()`), so exam dates need another source.
-- Subjects are raw course codes (e.g. `E5-GK3`), not readable names.
-- The stub LLM is keyword-based, so real notes and answers need a real model (Gemini, Claude or a local one; only the stub exists).
-- Run the bot on one machine at a time; Telegram allows a single polling connection per token.
+**Reads it.** A vision model (Gemini) turns each photo into text, handwriting and teacher corrections included. Then `/search ableitung` finds the photo, and `/show 12` gives you the text back.
 
-**Next**
-- Ask questions over the materials with citations, and generate exam prep from past exams
-- A real LLM client behind `LLMClient` (Gemini text, or a local model on the desktop PC)
-- Untis poller and Telegram alerts for Entfall, substitutions and new homework
-- A share-with-my-Kurs switch (the `visibility` field exists; everything is private for now)
-- Optional: an HTTPS tunnel if the website should be usable by others
+**Tests your vocabulary.** Send a vocab page as kind `vocab`, send `/quiz 12`, and the bot asks you the words one by one. It forgives accents, a missing article, ß or ss, and a small typo, and tells you what to fix. It remembers which words you miss and asks those first. Works for any language pair (tested: Spanish, Dutch, English, German).
 
-## Run
+**Knows your school day.** Connect your school account with `/login` (any school on WebUntis) and you get `/week`, `/today` and `/homework`, and Kurs buttons built from your own timetable.
+
+**Tells you when something changes.** The admin gets a message when a lesson is cancelled (Entfall), substituted, moved to another room, or when new homework appears.
+
+## How to use it
+
+1. Open an invite link from whoever runs the bot, or ask them for one.
+2. Send a photo. The bot asks for the Kurs (tap one or type it) and the kind. Photos of exams are best sent as a **File**, not as a Photo, because Telegram squashes photos.
+3. Optional: send `/login`. The bot asks for your school, your username, then your password, and deletes your messages.
+
+| Command | What it does |
+|---|---|
+| *send a photo* | file it under a Kurs (albums work too) |
+| `/search words` | find your uploads by what is written in them |
+| `/list`, `/show 12` | your recent uploads, the text of one |
+| `/delete 12`, `/retry 12` | delete an upload, read a photo again |
+| `/quiz 12`, `/words 12` | vocabulary test on a vocab page, list its words (`/quiz 12 reverse` asks the other way) |
+| `/login`, `/logout` | connect or forget your school account |
+| `/week`, `/today`, `/homework` | your schedule and open homework (after `/login`) |
+| `/cancel`, `/help` | stop what you're doing, help |
+| `/invite`, `/invites`, `/revoke` | admins: create, list and turn off invite links |
+
+Type `/` in the chat and Telegram shows the same list.
+
+## Privacy, honestly
+
+- **Your uploads are private** to you. Nobody else can see, search or quiz on them.
+- **Photos go to Google** when reading is switched on (it is an option, and the bot's admin decides). On a free Gemini key Google may use content to improve its products, so the admin should use a paid key for real student material.
+- **Your school password is never stored or logged.** The bot checks it once with WebUntis and deletes your message. But Telegram itself sees what you type (bot chats are not end-to-end encrypted), so `/login` is optional and warns you first.
+- **Name fields** like `Name: ...` are blanked in the text the bot extracts. That is best effort: names elsewhere on the page are not caught, and the stored photo is unchanged.
+- **It runs on one computer** that someone owns. If that computer is off, the bot is off, and nothing is backed up unless the admin does it.
+- It uses WebUntis's unofficial API. Check with your school before opening it up widely.
+
+## Not built yet
+
+Asking questions about your material and getting answers with citations, and exam prep from past exams. Those are the next step. See [`docs/idea.md`](docs/idea.md) for where this is going.
+
+---
+
+## Run it yourself
+
+You need Python 3.11+, a Telegram bot token from @BotFather, and (optionally) a Gemini API key.
 
 ```
 python3 -m venv .venv
 .venv/bin/pip install webuntis pydantic requests fastapi uvicorn python-multipart python-telegram-bot
-cp .env.example .env        # fill in the Untis server/school (and optional Telegram and Gemini keys)
-UNTIS_PROVIDER=real .venv/bin/uvicorn app.main:app --app-dir backend    # then open localhost:8000
+cp .env.example .env     # fill it in
+UNTIS_PROVIDER=real .venv/bin/uvicorn app.main:app --app-dir backend
 ```
 
-`UNTIS_PROVIDER` must be set explicitly, otherwise login is disabled. `real` checks logins against WebUntis (`UNTIS_SERVER` and `UNTIS_SCHOOL` in `.env` set the school for the website; the Telegram `/login` lets each person pick theirs). `mock` is a demo mode with fake data: any username with the password `demo`.
+Then message your bot `/whoami`, put the number it returns in `ALLOWED_USERS` in `.env`, restart, and send `/invite` to get a link for your classmates.
 
-`backend/scripts/test_untis.py` checks the Untis login with the credentials in `.env`. Uploads go to `data/` and `vault/` (both gitignored).
+The main settings in `.env` (all listed in `.env.example`):
 
-**Telegram bot:** create a bot with @BotFather and put the token in `.env` as `TELEGRAM_TOKEN`. The bot starts together with the web app (`TELEGRAM_ENABLED=0` turns it off), and only one machine may run it at a time. To become an admin, message the bot `/whoami` and put the number it returns in `ALLOWED_USERS` (comma-separated for several), then restart. As an admin, send `/invite` and share the link with your classmates. `MAX_UPLOADS_PER_USER` (default 500) caps uploads per person.
+| Setting | Meaning |
+|---|---|
+| `TELEGRAM_TOKEN` | the bot token. Only one machine may run the bot at a time. |
+| `ALLOWED_USERS` | admin Telegram IDs, comma-separated. They create invites and need none themselves. |
+| `UNTIS_PROVIDER` | `real`, or `mock` for a demo (any username, password `demo`). Must be set, otherwise login is off. |
+| `UNTIS_SERVER`, `UNTIS_SCHOOL`, `UNTIS_USER`, `UNTIS_PASSWORD` | the school and account used for the admin's alerts and the website |
+| `OCR_PROVIDER=gemini`, `GEMINI_API_KEY` | turn on photo reading and vocab tests |
+| `ALERTS=off` | alerts are on by default with `UNTIS_PROVIDER=real`; this turns them off |
 
-**Photo reading (optional):** put `GEMINI_API_KEY` in `.env` and set `OCR_PROVIDER=gemini`. Photos uploaded before it was switched on are read at the next start. `GEMINI_MODEL` and `GEMINI_TIMEOUT` are optional.
+Photos, the database and the Obsidian notes are stored in `data/` and `vault/` (both ignored by git). There is also a small optional website on `localhost:8000` (login, upload, search).
 
-**Tests** (use a scratch folder so they don't touch your data):
+**Tests** run offline, with Gemini and Telegram faked. Use a scratch folder so they don't touch your data:
 
 ```
 export DATA_DIR=/tmp/x/data VAULT_PATH=/tmp/x/vault
-.venv/bin/python backend/scripts/test_bot_flow.py
-.venv/bin/python backend/scripts/test_ocr.py
+for t in bot_flow vocab ocr alerts; do .venv/bin/python backend/scripts/test_$t.py; done
 ```
+
+More: [`docs/structure.md`](docs/structure.md) explains the code, the data model and the security design.
