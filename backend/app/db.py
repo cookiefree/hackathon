@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS vocab_items (
     id INTEGER PRIMARY KEY, set_id INTEGER NOT NULL, front TEXT NOT NULL, back TEXT NOT NULL,
     correct INTEGER NOT NULL DEFAULT 0, missed INTEGER NOT NULL DEFAULT 0, last_seen TEXT
 );
+CREATE TABLE IF NOT EXISTS quiz_state (        -- each person's running (or last finished) test, so restarts keep it
+    telegram_id TEXT PRIMARY KEY, json TEXT NOT NULL, running INTEGER NOT NULL, updated TEXT NOT NULL
+);
 """
 SCHEMA = (MATERIALS_SQL + ACCOUNTS_SQL + VOCAB_SQL
           + "CREATE VIRTUAL TABLE IF NOT EXISTS materials_fts USING fts5(title, ocr_text);")

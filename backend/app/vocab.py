@@ -4,6 +4,7 @@ Gemini reads the pair columns straight from the photo (layout matters, so it is 
 OCR text). Pairs are stored per upload, with a right/missed count per word. Answers are checked
 leniently: accents, a missing article or a one-letter typo still count, with a note.
 """
+import json
 import random
 import re
 import unicodedata
@@ -153,6 +154,14 @@ ARTICLES = {"der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "t
             "de", "het", "een"}                     # Dutch
 OPTIONAL_ARTICLES = {"to"}                         # "to be" and "be" are the same answer
 _PAREN = re.compile(r"\([^)]*\)")
+# Textbook placeholders ("etw. kochen", "to tell sb sth", "ayudar a alguien"): optional when answering.
+PLACEHOLDERS = {"etw", "etwas", "jd", "jdn", "jdm", "jds", "jmd", "jmdn", "jmdm", "jmds", "jemand", "jemanden", "jemandem",
+                "sth", "smth", "sb", "smb", "someone", "something", "sm",
+                "algo", "alguien", "algn", "alg",
+                "qc", "qn", "qch", "qqch", "qqn", "quelque chose", "quelqu un",
+                "iets", "iem", "iemand"}
+_PLACEHOLDER_RE = re.compile(r"(?:^| )(?:a )?(?:" + "|".join(sorted(map(re.escape, PLACEHOLDERS), key=len, reverse=True))
+                             + r")(?= |$)")
 
 
 def _squash(s: str) -> str:
@@ -160,6 +169,12 @@ def _squash(s: str) -> str:
     s = re.sub(r"[’'`´]", " ", s)
     s = re.sub(r"[^\w\s]", " ", s)
     return " ".join(s.split())
+
+
+def _drop_placeholders(clean: str) -> str:
+    """'etw jdn hören' -> 'hören'. A text that is nothing but a placeholder ('etwas') stays as it is."""
+    out = " ".join(_PLACEHOLDER_RE.sub(" ", f" {clean} ").split())
+    return out or clean
 
 
 def _plain(s: str) -> str:
@@ -177,10 +192,13 @@ def _variants(expected: str) -> list[tuple[str, str]]:
     """(cleaned form, original text) for every way of writing the expected answer that we accept."""
     out, seen = [], set()
     pieces = [expected] + re.split(r"[;,/]|\bor\b", expected)
-    for piece in pieces:
+    for i, piece in enumerate(pieces):
         piece = piece.strip()
         for form in (_PAREN.sub(" ", piece), piece.replace("(", " ").replace(")", " ")):
-            clean = _squash(form)
+            raw = _squash(form)
+            clean = _drop_placeholders(raw)
+            if i and clean == raw and _PLACEHOLDER_RE.fullmatch(raw):
+                continue                     # "etw./jdn hören" split into "etw." alone: not an answer
             if len(clean) >= 2 and clean not in seen:
                 seen.add(clean)
                 out.append((clean, piece))
@@ -203,7 +221,7 @@ def _tolerance(stem: str) -> int:
 
 def check_answer(given: str, expected: str) -> Verdict:
     """Compare an answer with the expected word or phrase."""
-    g = _squash(given)
+    g = _drop_placeholders(_squash(given))
     if not g:
         return Verdict("wrong", "")
     g_art, g_stem = _split_article(g)
@@ -226,3 +244,33 @@ def check_answer(given: str, expected: str) -> Verdict:
             if best.kind != "close":
                 best = Verdict("close", f"Almost, it is spelled: {original}")
     return best
+
+
+# --- a running test survives a restart ---------------------------------------------------------
+
+def save_quiz(telegram_id: int, quiz: Quiz | None, running: bool = True) -> None:
+    """Store the test (running, or the finished one behind the 'practise' buttons). None deletes it."""
+    with connect() as con:
+        if quiz is None:
+            con.execute("DELETE FROM quiz_state WHERE telegram_id=?", (str(telegram_id),))
+            return
+        data = {k: getattr(quiz, k) for k in ("set_id", "title", "lang_ask", "lang_answer", "pos", "correct", "reverse")}
+        data["cards"] = [[c.id, c.ask, c.answer] for c in quiz.cards]
+        data["missed"] = [[c.id, c.ask, c.answer] for c in quiz.missed]
+        con.execute("INSERT OR REPLACE INTO quiz_state (telegram_id, json, running, updated) VALUES (?,?,?,?)",
+                    (str(telegram_id), json.dumps(data), int(running), datetime.now().isoformat(timespec="seconds")))
+
+
+def load_quiz(telegram_id: int) -> tuple[Quiz, bool] | None:
+    """(quiz, running) as last saved, or None."""
+    with connect() as con:
+        row = con.execute("SELECT json, running FROM quiz_state WHERE telegram_id=?", (str(telegram_id),)).fetchone()
+    if row is None:
+        return None
+    try:
+        d = json.loads(row["json"])
+        cards = [Card(*c) for c in d.pop("cards")]
+        missed = [Card(*c) for c in d.pop("missed")]
+        return Quiz(cards=cards, missed=missed, **d), bool(row["running"])
+    except (ValueError, TypeError, KeyError):
+        return None

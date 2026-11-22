@@ -86,6 +86,7 @@ hackathon/
 | `invites` | `code`, `created`, `expires`, `max_uses`, `uses`, `revoked` |
 | `vocab_sets` | one per uploaded vocab page: `material_id` (unique), `owner`, `lang_front`, `lang_back` |
 | `vocab_items` | the word pairs: `set_id`, `front`, `back`, and `correct` / `missed` / `last_seen` counters |
+| `quiz_state` | each person's running test (or the last finished one, for the "practise" buttons), so a restart doesn't lose it |
 
 Older databases are migrated on start (owner and visibility, then `ocr_status`). Photos live at `data/uploads/<sha256>.<ext>`. The vault note for each photo is `vault/<Kurs>/<date> <kind> <id>.md`, with the image copied to `vault/_attachments/`.
 

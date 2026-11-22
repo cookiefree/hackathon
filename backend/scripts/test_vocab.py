@@ -183,6 +183,41 @@ check("reading new pages is rate-limited per person", "lot of pages" in f.quiz(1
 check("...but a page that was already read is not", "Unidad 3" in f.quiz(111, str(m1.id)).text); f.cancel(111)
 auth._fails.clear()
 
+# textbook placeholders (etw., jdn, sb, sth, algo, alguien) are optional
+for given, expected, kind in [
+    ("kochen", "etw. kochen", "correct"), ("etw. kochen", "etw. kochen", "correct"),
+    ("hören", "etw./jdn hören", "correct"), ("verbringen", "etw. verbringen", "correct"),
+    ("jdm helfen", "jdm. helfen", "correct"), ("helfen", "jdm. helfen", "correct"),
+    ("tell", "to tell sb sth", "correct"), ("ayudar", "ayudar a alguien", "correct"),
+    ("comprar", "comprar algo", "correct"), ("iets doen", "iets doen", "correct"),
+    ("etwas", "etwas", "correct"), ("algo", "algo", "correct"),
+    ("etw", "etw./jdn hören", "wrong"), ("jdn", "etw./jdn hören", "wrong"),
+    ("kochn", "etw. kochen", "close"), ("braten", "etw. kochen", "wrong")]:
+    got = vocab.check_answer(given, expected).kind
+    check(f"'{given}' for '{expected}' is {kind}", got == kind)
+
+# a restart in the middle of a test keeps it
+f.cancel(111)
+r = f.quiz(111, str(m1.id))
+first = f.sessions[111].quiz.current
+check("a running test is stored", vocab.load_quiz(111) is not None and vocab.load_quiz(111)[1])
+f.on_text(111, first.answer)
+second = f.sessions[111].quiz.current
+restarted = tb.Flow()                                  # a fresh bot process: nothing in memory
+r = restarted.on_text(111, second.answer)
+check("after a restart the next answer continues the test", r.text.startswith("Correct.")
+      and restarted.sessions[111].quiz.pos == 2 and restarted.sessions[111].quiz.correct == 2)
+check("/cancel after a restart stops the stored test", "stopped" in tb.Flow().cancel(111).text
+      and vocab.load_quiz(111) is None)
+check("with no test stored, text gets the normal answer", "Send me a photo" in tb.Flow().on_text(111, "hola").text)
+fl = tb.Flow()
+fl.quiz(111, str(m1.id))
+while fl.sessions[111].quiz is not None:
+    fl.on_text(111, "?")
+again = tb.Flow().on_choice(111, "quiz:missed")
+check("the 'practise the missed' button still works after a restart", again.text.startswith("Vocabulary test"))
+tb.Flow().cancel(111)
+
 # deleting an upload removes its words
 check("deleting the upload removes its word set", f.delete(111, str(m1.id)).text.startswith("Deleted")
       and vocab.set_for_material(m1.id, "tg:111") is None

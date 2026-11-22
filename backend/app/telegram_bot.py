@@ -334,7 +334,23 @@ class Flow:
                 return Reply(reply.text + note, reply.buttons)
             return Reply(f"Added. {len(s.pending)} photos waiting.{note}")
 
+    def _restore_quiz(self, uid: int) -> None:
+        """After a restart (or a long pause) the session is new: pick the stored test back up."""
+        with self._lock:
+            s = self._s(uid)
+            if s.state is not None or s.pending or s.quiz is not None or s.last_quiz is not None:
+                return
+            stored = vocab.load_quiz(uid)
+            if stored is None:
+                return
+            quiz, running = stored
+            if running and quiz.current is not None:
+                s.quiz, s.state = quiz, "quiz"
+            elif not running:
+                s.last_quiz = quiz
+
     def on_text(self, uid: int, text: str) -> Reply:
+        self._restore_quiz(uid)
         with self._lock:
             state = self._s(uid).state
         if state in ("login_school", "login_pick"):
@@ -362,6 +378,8 @@ class Flow:
 
     def on_choice(self, uid: int, data: str) -> Reply:
         key, _, value = data.partition(":")
+        if key == "quiz":
+            self._restore_quiz(uid)
         with self._lock:
             s = self._s(uid)
             if key == "school" and s.state == "login_pick" and value.isdecimal() and int(value) < len(s.schools):
@@ -413,7 +431,12 @@ class Flow:
         return Reply(" ".join(parts) if parts else "Nothing to save.")
 
     def cancel(self, uid: int, *args: str) -> Reply:
-        self.sessions.pop(uid, None)
+        with self._lock:
+            s = self.sessions.pop(uid, None)
+        stored = vocab.load_quiz(uid)
+        if (s and s.quiz) or (stored and stored[1]):
+            vocab.save_quiz(uid, None)
+            return Reply("Test stopped. Send /quiz to start another.")
         return Reply("Dropped. Nothing was saved.")
 
     # --- your materials -----------------------------------------------------------------------
@@ -554,6 +577,7 @@ class Flow:
         with self._lock:
             s = self._s(uid)
             s.quiz, s.last_quiz, s.state = quiz, None, "quiz"
+        vocab.save_quiz(uid, quiz)
         n = len(quiz.cards)
         return Reply(f"Vocabulary test: {quiz.title}\n{n} word{'s' if n != 1 else ''}, {quiz.lang_ask} -> {quiz.lang_answer}. "
                      "Type the translation. Send ? to skip a word, /cancel to stop.\n\n" + self._question(quiz))
@@ -597,9 +621,11 @@ class Flow:
         else:
             quiz.missed.append(card)
         if quiz.current is not None:
+            vocab.save_quiz(uid, quiz)
             return Reply(f"{line}\n\n{self._question(quiz)}")
         with self._lock:                                     # finished
             s.quiz, s.last_quiz, s.state = None, quiz, None
+        vocab.save_quiz(uid, quiz, running=False)
         total = len(quiz.cards)
         summary = f"{line}\n\nDone: {quiz.correct}/{total} right."
         buttons = []
@@ -821,6 +847,22 @@ async def _publish_commands(app) -> None:
             log.warning("Could not set the admin command menu for %s: %s", admin, type(e).__name__)
 
 
+_conflict_warned = 0.0
+
+
+def _polling_error(exc: Exception) -> None:
+    global _conflict_warned
+    from telegram.error import Conflict
+    if isinstance(exc, Conflict):
+        if time.time() - _conflict_warned > 60:          # PTB retries every few seconds; warn once a minute
+            _conflict_warned = time.time()
+            log.error("ANOTHER COPY OF THIS BOT IS RUNNING with the same TELEGRAM_TOKEN (another computer or "
+                      "terminal). Telegram hands each message to only one of them, so chats and tests break. "
+                      "Stop the other copy.")
+        return
+    log.warning("polling error: %s", type(exc).__name__)
+
+
 async def start_bot():
     """Start polling if TELEGRAM_TOKEN is set. Never raises: the web app must come up either way."""
     token = config.get("TELEGRAM_TOKEN")
@@ -832,7 +874,7 @@ async def start_bot():
         app.bot_data["loop"] = asyncio.get_running_loop()
         await app.initialize()
         await app.start()
-        await app.updater.start_polling()
+        await app.updater.start_polling(error_callback=_polling_error)
         try:
             await _publish_commands(app)
         except Exception:

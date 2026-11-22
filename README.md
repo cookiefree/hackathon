@@ -17,7 +17,7 @@
 
 **Reads it.** A vision model (Gemini) turns each photo into text, handwriting and teacher corrections included. Then `/search ableitung` finds the photo, and `/show 12` gives you the text back.
 
-**Tests your vocabulary.** Send a vocab page as kind `vocab`, send `/quiz 12`, and the bot asks you the words one by one. It forgives accents, a missing article, ß or ss, and a small typo, and tells you what to fix. It remembers which words you miss and asks those first. Works for any language pair (tested: Spanish, Dutch, English, German).
+**Tests your vocabulary.** Send a vocab page as kind `vocab`, send `/quiz 12`, and the bot asks you the words one by one. It forgives accents, a missing article, placeholders like "etw." or "sb", ß or ss, and a small typo, and tells you what to fix. It remembers which words you miss and asks those first. Works for any language pair (tested: Spanish, Dutch, English, German).
 
 **Knows your school day.** Connect your school account with `/login` (any school on WebUntis) and you get `/week`, `/today` and `/homework`, and Kurs buttons built from your own timetable.
 
