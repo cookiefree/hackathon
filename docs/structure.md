@@ -26,6 +26,7 @@ hackathon/
 │   │   ├── uploads.py            photos in (Kurs and kind), /list, /search, /show, /delete, /retry
 │   │   ├── quiz.py               /quiz, /words, answering
 │   │   ├── admin.py              /invite, /invites, /revoke
+│   │   ├── chat.py               free-text chat: Gemini with the read-only commands as tools
 │   │   ├── common.py             texts, the command menu, limits, Reply and Session
 │   │   └── adapter.py            python-telegram-bot: handlers, sending, polling, start_bot/stop_bot
 │   ├── core/                     no Telegram, no web
@@ -182,6 +183,12 @@ The menu Telegram shows when typing `/` comes from `COMMANDS` and `ADMIN_COMMAND
 ## Vocabulary tests
 
 `vocab.py` has three parts. **Reading:** a photo uploaded as kind `vocab` is not read as running text (that mixes up the columns of a vocab table). The worker reads it as word pairs instead, and that read also prepares the quiz; the text becomes `front = back` lines (searchable, shown by `/show`) and the vault note gets a two-column table. If no word list is found, it falls back to normal text. `/retry` reads the words again (their practice counts start over). The prompt describes the usual textbook layout: column pairs side by side, bold headwords, dash-led example sentences and flag-marked third-language hints left out. `gemini.extract_json` sends the photo with a fixed schema (front, back, plus the two language names) and gets structured JSON back, so the columns of a vocab table are read as columns. The result is cleaned (duplicates, pairs with a missing side and over-long entries dropped, at most 200 words) and stored once per upload. Reading new pages is rate-limited per person (`VOCAB_BUILD_LIMIT` per 15 minutes) because each is a paid call. **Checking:** `check_answer` returns correct, close or wrong. Case, punctuation and ß/ss are ignored; text in parentheses and comma, slash or semicolon alternatives are optional; an article may be left out (a note says so) but not swapped for a different one; accents and a one-letter typo (two for words of 9+ letters) count as close; words of 4 letters or fewer must be exact. **Quiz:** a round is up to 25 words, picked by lowest right-minus-missed score (random tie-break) and then shuffled. Textbook placeholders (`etw.`, `jdn`, `sb`, `sth`, `algo`, `alguien`, `qc`, `iets` and similar) are optional on both sides. State lives in the chat session and is saved to `quiz_state` after every answer, so a restart or a long pause continues the test; every answer updates the word's counters; the end screen offers `quiz:missed` and `quiz:again` buttons.
+
+## Chat
+
+Any text that is not an answer to a question the bot asked (Kurs, login, quiz) goes to `bot/chat.py`. It calls Gemini (`ocr.gemini.generate`) with a system prompt, the last 12 messages of the conversation (in memory only, cleared by `/cancel` and on restart) and a set of tools: `list_uploads`, `search_uploads`, `read_upload`, `list_words`, `start_quiz`, `week`, `today`, `homework`. Each tool simply runs the matching bot command for that person, so it only ever sees their own data. Nothing that deletes, logs in or out, or manages invites is a tool. A started quiz is sent straight to the chat and the next messages answer it. Text from uploads is passed as data, and the prompt says to treat it that way; the worst a crafted photo could do is make the bot read the person's own data back to them.
+
+Limits: at most 4 tool rounds per message (each is one Gemini request), 30 messages per person per 15 minutes (`CHAT_LIMIT`), 2000 characters per message. Without a Gemini key the chat is off and text gets the old hint. Gemini's own quota is shared with photo reading.
 
 ## Untis alerts
 

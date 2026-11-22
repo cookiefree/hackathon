@@ -54,6 +54,11 @@ def _post(body: dict) -> dict:
     return r.json()
 
 
+def generate(body: dict) -> dict:
+    """A raw generateContent call (used by the chat, which needs tools and history). Raises OcrError."""
+    return _post(body)
+
+
 def _text_of(answer: dict) -> str:
     if answer.get("promptFeedback", {}).get("blockReason"):
         raise OcrError(f"Gemini blocked the image ({answer['promptFeedback']['blockReason']}).")

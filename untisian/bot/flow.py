@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 
 from untisian.bot.admin import AdminCommands
+from untisian.bot.chat import ChatCommands
 from untisian.bot.common import INVITE_ONLY, HELP, SESSION_IDLE, WELCOME, Reply, Session
 from untisian.bot.login import LoginCommands
 from untisian.bot.quiz import QuizCommands
@@ -27,7 +28,7 @@ from untisian.core.materials import KINDS, KURS_RE
 log = logging.getLogger(__name__)
 
 
-class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminCommands):
+class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminCommands, ChatCommands):
     """The whole conversation, one method per command. Each feature lives in its own module."""
     def __init__(self, kurs_source: Callable[[str], list[str]] | None = None) -> None:
         self.sessions: dict[int, Session] = {}
@@ -35,6 +36,7 @@ class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminC
         self.bot_username = ""
         self.from_telegram: set[int] = set()              # material ids uploaded here, announced when read
         self._lock = threading.RLock()                    # handlers run in threads; sessions are shared state
+        self._histories: dict = {}                        # uid -> recent chat messages (chat.py), memory only
 
     # --- who is this --------------------------------------------------------------------------
 
@@ -108,6 +110,13 @@ class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminC
             return self._quiz_answer(uid, text)
         with self._lock:
             s = self._s(uid)
+            if s.state == "kind":
+                return Reply("Pick the kind with the buttons above, or send /cancel.")
+            talk = s.state is None and not s.pending
+        if talk:
+            return self.chat(uid, text)
+        with self._lock:
+            s = self._s(uid)
             if s.state != "kurs":
                 return Reply("Send me a photo to start. Type / to see the commands.")
             text = text.strip()
@@ -139,6 +148,7 @@ class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminC
     def cancel(self, uid: int, *args: str) -> Reply:
         with self._lock:
             s = self.sessions.pop(uid, None)
+        self.forget_chat(uid)
         stored = vocab.load_quiz(uid)
         if (s and s.quiz) or (stored and stored[1]):
             vocab.save_quiz(uid, None)

@@ -46,6 +46,15 @@ class Checks:
 
 
 @pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Tests never reach Google, WebUntis or Telegram: any real HTTP request fails the test loudly."""
+    import requests
+    def refuse(*a, **k):
+        raise RuntimeError(f"a test tried to use the network: {a[1:3]}")
+    monkeypatch.setattr(requests.Session, "request", refuse)
+
+
+@pytest.fixture(autouse=True)
 def isolated(tmp_path):
     env = dict(os.environ)
     os.environ.update(DATA_DIR=str(tmp_path / "data"), VAULT_PATH=str(tmp_path / "vault"))

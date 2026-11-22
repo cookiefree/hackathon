@@ -82,6 +82,7 @@ def test_vocabulary(check):
         return FAKE
     gemini.extract_json = fake_extract
     gemini.read_image = lambda data, mime: "text"
+    gemini.generate = lambda body: {"candidates": [{"content": {"parts": [{"text": "CHAT"}]}}]}   # never the network
 
     f = tb.Flow(); f.bot_username = "testbot"
     check("the admin is in", f.resolve(111) == "tg:111")
@@ -126,7 +127,7 @@ def test_vocabulary(check):
     r = f.on_choice(111, "quiz:again")
     check("'test everything again' starts a full round", "4 words" in r.text)
     f.cancel(111)
-    check("/cancel stops a test; typing afterwards is just text", "photo to start" in f.on_text(111, "essen").text)
+    check("/cancel stops a test; typing afterwards goes to the chat", f.on_text(111, "essen").text == "CHAT")
     check("a stale button is ignored", "expired" in f.on_choice(111, "quiz:again").text)
 
     r = f.quiz(111, str(m1.id), "reverse")
@@ -214,7 +215,7 @@ def test_vocabulary(check):
           and restarted.sessions[111].quiz.pos == 2 and restarted.sessions[111].quiz.correct == 2)
     check("/cancel after a restart stops the stored test", "stopped" in tb.Flow().cancel(111).text
           and vocab.load_quiz(111) is None)
-    check("with no test stored, text gets the normal answer", "Send me a photo" in tb.Flow().on_text(111, "hola").text)
+    check("with no test stored, text goes to the chat", tb.Flow().on_text(111, "hola").text == "CHAT")
     fl = tb.Flow()
     fl.quiz(111, str(m1.id))
     while fl.sessions[111].quiz is not None:

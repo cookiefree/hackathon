@@ -17,6 +17,7 @@
 - **Reads it.** The text is pulled out of every photo, so `/search ableitung` finds the right page later.
 - **Tests your vocabulary.** Send a vocab page, then `/quiz 12`. It asks the words one by one, forgives small typos and missing articles, and asks the words you miss more often.
 - **Knows your timetable.** After `/login` with your WebUntis account: `/week`, `/today`, `/homework`.
+- **Talks.** Just write to it: "what's on my worksheet about Ableitungen?", "what do I have today?", "test me on my Spanish words". It looks things up in your uploads and timetable and answers, in your language.
 
 Type `/` in the chat to see all commands.
 
@@ -52,6 +53,6 @@ cp .env.example .env          # fill it in
 
 Then send your bot `/whoami`, put that number in `ALLOWED_USERS` in `.env`, restart, and send `/invite` to get a link for your classmates.
 
-Photos go to Google for reading when a Gemini key is set. Your school password is checked once and never stored.
+Photos and chat messages go to Google (Gemini) when a Gemini key is set. Your school password is checked once and never stored.
 
 Details on the code, settings, privacy and tests: [`docs/structure.md`](docs/structure.md).

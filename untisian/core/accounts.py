@@ -40,7 +40,8 @@ USER_FAIL_LIMIT = 20       # per username: high, so someone else's guesses canno
 
 SCHOOL_SEARCH_LIMIT = 20   # school lookups per person per 15 minutes
 VOCAB_BUILD_LIMIT = 10     # vocabulary pages read per person per 15 minutes (each one is a paid API call)
-_ACTION_LIMITS = {"schoolsearch": SCHOOL_SEARCH_LIMIT, "vocab": VOCAB_BUILD_LIMIT}
+CHAT_LIMIT = 30           # chat messages per person per 15 minutes (each is 1-4 Gemini requests)
+_ACTION_LIMITS = {"schoolsearch": SCHOOL_SEARCH_LIMIT, "vocab": VOCAB_BUILD_LIMIT, "chat": CHAT_LIMIT}
 
 
 def _limit(key: str) -> int:

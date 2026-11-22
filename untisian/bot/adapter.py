@@ -132,6 +132,11 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
             except Exception:
                 warning = ("\n\nI couldn't delete your message, so it is still visible in this chat. "
                            "Please delete it yourself.")
+        if not hide:
+            try:
+                await ctx.bot.send_chat_action(update.effective_chat.id, "typing")   # a chat answer takes a moment
+            except Exception:
+                pass
         reply = await asyncio.to_thread(flow.on_text, uid, msg.text)
         if warning:
             reply = Reply(reply.text + warning, reply.buttons)

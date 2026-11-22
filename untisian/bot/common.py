@@ -15,6 +15,8 @@ HELP = (
     "and the text gets hard to read.\n\n"
     "Vocabulary: photograph a vocab page, choose the kind 'vocab', then /quiz NUMBER and I'll test you.\n\n"
     "Your school account is optional but useful: /login gives you your own Kurs buttons, /week and /homework, for any school on WebUntis.\n\n"
+    "You can also just write to me, like \"what's my homework?\" or \"what did the worksheet say about Ableitungen?\". "
+    "I look it up in your uploads and schedule. (Those messages go to Google's Gemini to be answered.)\n\n"
     "Type / to see all commands."
 )
 WELCOME = ("You're in. Send me a photo to get started.\n\n"
