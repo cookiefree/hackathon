@@ -145,6 +145,14 @@ class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminC
             return self._save(uid, value)
         return Reply("That choice has expired. Send the photos again.")
 
+    def stop(self, uid: int, *args: str) -> Reply:
+        """/stop: end a running test with its score so far; otherwise the same as /cancel."""
+        self._restore_quiz(uid)
+        with self._lock:
+            s = self._s(uid)
+            quiz = s.quiz if s.state == "quiz" else None
+        return self._quiz_stop(uid, quiz) if quiz is not None else self.cancel(uid)
+
     def cancel(self, uid: int, *args: str) -> Reply:
         with self._lock:
             s = self.sessions.pop(uid, None)

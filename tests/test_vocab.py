@@ -189,6 +189,31 @@ def test_vocabulary(check):
     check("...but a page that was already read is not", "Unidad 3" in f.quiz(111, str(m1.id)).text); f.cancel(111)
     accounts._fails.clear()
 
+    # ---- stopping a test by typing ------------------------------------------------------------------
+    f.cancel(111)
+    f.quiz(111, str(m1.id))
+    f.on_text(111, f.sessions[111].quiz.current.answer)
+    second = f.sessions[111].quiz.current
+    missed_before = next(r["missed"] for r in vocab.items_of(sid) if r["id"] == second.id)
+    r = f.on_text(111, "Stop!")
+    check("typing 'stop' ends the test with the score so far", "stopped after 1 word: 1/1 right" in r.text
+          and f.sessions[111].state is None and vocab.load_quiz(111)[1] is False)
+    check("...and 'stop' was not counted as an answer",
+          next(r["missed"] for r in vocab.items_of(sid) if r["id"] == second.id) == missed_before)
+    for word in ("abbrechen", "test beenden", "cancel", "/stop"):
+        f.quiz(111, str(m1.id))
+        check(f"'{word}' ends a test too", "stopped" in f.on_text(111, word).text and f.sessions[111].quiz is None)
+    f.quiz(111, str(m1.id))
+    r = f.stop(111)
+    check("/stop right at the start just stops", r.text.startswith("Test stopped.") and vocab.load_quiz(111) is None)
+    check("/stop without a test behaves like /cancel", "Dropped" in f.stop(111).text)
+    halt = vocab.Quiz(1, "t", "A", "B", [vocab.Card(vocab.items_of(sid)[0]["id"], "anhalten", "stop")])
+    f._quiz_begin(111, halt, False)
+    check("when 'stop' is the right answer it counts as the answer", f.on_text(111, "stop").text.startswith("Correct."))
+    restarted = tb.Flow()
+    restarted.quiz(111, str(m1.id)); restarted.on_text(111, restarted.sessions[111].quiz.current.answer)
+    check("/stop works after a restart too", "stopped after 1 word" in tb.Flow().stop(111).text)
+
     # textbook placeholders (etw., jdn, sb, sth, algo, alguien) are optional
     for given, expected, kind in [
         ("kochen", "etw. kochen", "correct"), ("etw. kochen", "etw. kochen", "correct"),

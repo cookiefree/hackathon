@@ -174,7 +174,8 @@ Uploads accept JPEG, PNG and WebP up to 15 MB, checked from the file's bytes, no
 | *send a photo or an album* | joined | asks for the Kurs (buttons, or type it) and kind, then files them |
 | `/search words`, `/list`, `/show N`, `/delete N`, `/retry N` | joined | work on the person's own uploads |
 | `/quiz [N] [reverse]`, `/words [N]` | joined | `/quiz` reads the word pairs from upload N (once, then cached) and runs a test of up to 25 words; without N it uses the latest vocab page. `/words` lists the pairs. Deleting the upload deletes its words. |
-| `/cancel`, `/help` | joined | drop pending photos; help |
+| `/stop` | joined | end a running vocab test with the score so far (typing stop, stopp, abbrechen, beenden or cancel does the same, unless it is the answer) |
+| `/cancel`, `/help` | joined | drop pending photos, stop a test and forget the chat; help |
 | `/link CODE` | anyone with a website code | connect a website account (not in the menu) |
 | `/invite [N]`, `/invites`, `/revoke CODE` | admins | manage invite links |
 

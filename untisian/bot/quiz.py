@@ -82,7 +82,7 @@ class QuizCommands:
         vocab.save_quiz(uid, quiz)
         n = len(quiz.cards)
         return Reply(f"Vocabulary test: {quiz.title}\n{n} word{'s' if n != 1 else ''}, {quiz.lang_ask} -> {quiz.lang_answer}. "
-                     "Type the translation. Send ? to skip a word, /cancel to stop.\n\n" + self._question(quiz))
+                     "Type the translation. Send ? to skip a word, stop to end the test.\n\n" + self._question(quiz))
 
     @staticmethod
     def _question(quiz) -> str:
@@ -102,6 +102,10 @@ class QuizCommands:
         return self._quiz_begin(uid, vocab.make_quiz(vset, last.title, reverse), reverse)   # a fresh weighted round
 
     SKIP = {"?", "skip", "pass", "idk", "weiss nicht", "weiß nicht"}
+    # Typing one of these during a test ends it (unless it is the answer to the current word).
+    STOP = {"stop", "stopp", "stop it", "stop the test", "stop test", "end", "end test", "end the test", "quit", "exit",
+            "cancel", "abbrechen", "abbruch", "beenden", "test beenden", "test abbrechen", "aufhören", "aufhoeren",
+            "ende", "schluss", "/stop", "parar", "basta", "fin"}
 
     def _quiz_answer(self, uid: int, text: str) -> Reply:
         with self._lock:
@@ -110,7 +114,10 @@ class QuizCommands:
         if quiz is None or quiz.current is None:
             return Reply("No test is running. Send /quiz NUMBER to start one.")
         card = quiz.current
-        if text.strip().lower() in self.SKIP:
+        said = " ".join(text.strip().lower().rstrip("!.").split())
+        if said in self.STOP and vocab.check_answer(text, card.answer).kind == "wrong":
+            return self._quiz_stop(uid, quiz)
+        if said in self.SKIP:
             ok, line = False, f"The answer: {card.answer}"
         else:
             verdict = vocab.check_answer(text, card.answer)
@@ -125,11 +132,26 @@ class QuizCommands:
         if quiz.current is not None:
             vocab.save_quiz(uid, quiz)
             return Reply(f"{line}\n\n{self._question(quiz)}")
-        with self._lock:                                     # finished
+        return self._quiz_end(uid, quiz, f"{line}\n\nDone: {quiz.correct}/{len(quiz.cards)} right.")
+
+    def _quiz_stop(self, uid: int, quiz) -> Reply:
+        """End a test early, with the score for the words asked so far."""
+        asked = quiz.pos
+        quiz.cards = quiz.cards[:asked]
+        if not asked:
+            with self._lock:
+                s = self._s(uid)
+                s.quiz, s.state = None, None
+            vocab.save_quiz(uid, None)
+            return Reply("Test stopped. Send /quiz to start another.")
+        return self._quiz_end(uid, quiz, f"Test stopped after {asked} word{'s' if asked != 1 else ''}: "
+                                         f"{quiz.correct}/{asked} right.")
+
+    def _quiz_end(self, uid: int, quiz, summary: str) -> Reply:
+        with self._lock:
+            s = self._s(uid)
             s.quiz, s.last_quiz, s.state = None, quiz, None
         vocab.save_quiz(uid, quiz, running=False)
-        total = len(quiz.cards)
-        summary = f"{line}\n\nDone: {quiz.correct}/{total} right."
         buttons = []
         if quiz.missed:
             summary += "\n\nTo practise:\n" + "\n".join(f"{c.ask} = {c.answer}" for c in quiz.missed[:15])

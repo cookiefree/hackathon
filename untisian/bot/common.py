@@ -43,7 +43,8 @@ COMMANDS = [
     ("words", "list the words found on a page, e.g. /words 12"),
     ("login", "connect your school account (I ask for school, username, password)"),
     ("logout", "forget your schedule and homework"),
-    ("cancel", "drop the photos I'm holding"),
+    ("stop", "end the vocabulary test"),
+    ("cancel", "stop what I'm doing and forget our chat"),
     ("help", "what this bot does"),
 ]
 ADMIN_COMMANDS = [

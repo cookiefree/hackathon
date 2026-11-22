@@ -164,7 +164,7 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
     app = Application.builder().token(token).concurrent_updates(True).build()
     app.add_handler(CommandHandler("whoami", cmd_whoami, filters=private))
     for name in ("start", "help", "login", "link", "logout", "week", "today", "homework", "list", "search",
-                 "show", "delete", "retry", "quiz", "words", "cancel", "invite", "invites", "revoke"):
+                 "show", "delete", "retry", "quiz", "words", "cancel", "stop", "invite", "invites", "revoke"):
         app.add_handler(CommandHandler(name, command(name, secret=name in ("login", "link")), filters=private))
     app.add_handler(MessageHandler((filters.PHOTO | filters.Document.IMAGE) & private, on_media))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & private, on_text))
