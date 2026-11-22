@@ -64,9 +64,9 @@ You need Python 3.11+, a Telegram bot token from @BotFather, and (optionally) a 
 
 ```
 python3 -m venv .venv
-.venv/bin/pip install webuntis pydantic requests fastapi uvicorn python-multipart python-telegram-bot
-cp .env.example .env     # fill it in
-UNTIS_PROVIDER=real .venv/bin/uvicorn app.main:app --app-dir backend
+.venv/bin/pip install -e '.[web,dev]'      # or just  -e .  for the bot alone
+cp .env.example .env                       # fill it in
+.venv/bin/python -m untisian               # add --web for the website on localhost:8000
 ```
 
 Then message your bot `/whoami`, put the number it returns in `ALLOWED_USERS` in `.env`, restart, and send `/invite` to get a link for your classmates.
@@ -82,13 +82,12 @@ The main settings in `.env` (all listed in `.env.example`):
 | `OCR_PROVIDER=gemini`, `GEMINI_API_KEY` | turn on photo reading and vocab tests |
 | `ALERTS=off` | alerts are on by default with `UNTIS_PROVIDER=real`; this turns them off |
 
-Photos, the database and the Obsidian notes are stored in `data/` and `vault/` (both ignored by git). There is also a small optional website on `localhost:8000` (login, upload, search).
+Photos, the database and the Obsidian notes are stored in `data/` and `vault/` (both ignored by git). There is also a small optional website on `localhost:8000` (login, upload, search): start with `--web`.
 
-**Tests** run offline, with Gemini and Telegram faked. Use a scratch folder so they don't touch your data:
+**Tests** run offline, with Gemini and Telegram faked, each in its own empty folder (your data and `.env` are never touched):
 
 ```
-export DATA_DIR=/tmp/x/data VAULT_PATH=/tmp/x/vault
-for t in bot_flow vocab ocr alerts; do .venv/bin/python backend/scripts/test_$t.py; done
+.venv/bin/pytest
 ```
 
 More: [`docs/structure.md`](docs/structure.md) explains the code, the data model and the security design.

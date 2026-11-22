@@ -3,57 +3,69 @@
 Companion to `idea.md`. What exists in the repo, how the parts connect, and what is still planned. Anything marked **planned** is not built.
 
 ## Decisions made
-- **Backend:** Python 3.11+, FastAPI, SQLite. One process serves the web page, the API, the Telegram bot and the photo-reading worker.
+- **Backend:** Python 3.11+, SQLite. One process runs the Telegram bot, the photo-reading worker and the alerts (`python -m untisian`); `--web` adds the FastAPI website in the same process.
 - **Telegram is the main interface;** the website is optional. Accounts and access are described under "Accounts and security". No passwords are stored.
 - **Data is private by default.** Every upload has an owner, and each person only sees their own.
 - **Hosting for now:** one machine (a laptop or the desktop PC). The Telegram bot polls Telegram, so it needs no open port.
-- **Providers behind interfaces:** Untis (`real` or `mock`), LLM (`stub` only so far), photo reading (Gemini, opt-in).
-- **Not the focus any more:** transcribing lessons. The old code stays (see "Legacy").
+- **Providers behind interfaces:** Untis (`real` or `mock`), photo reading (Gemini, opt-in).
+- **Not the focus any more:** transcribing lessons. That code was removed; it is in git history before the restructure.
 
 ## Repo layout
 
 ```
 hackathon/
-├── docs/                         idea.md, structure.md, schedule.png
-├── backend/
-│   ├── app/
-│   │   ├── main.py               FastAPI app and all HTTP endpoints; starts the bot and OCR backlog
-│   │   ├── config.py             reads .env, get(key, default)
-│   │   ├── db.py                 SQLite schema, migrations, connect()
-│   │   ├── auth.py               WebUntis login, sessions, per-user data cache, Telegram accounts and invites, throttling
-│   │   ├── notify.py             hook: the OCR worker tells the bot a photo has been read
-│   │   ├── alerts.py             Untis change alerts for the admin (checks the .env account every few minutes)
+├── untisian/                     the package; start it with  python -m untisian  (add --web for the website)
+│   ├── __main__.py               command line: the bot, or the bot and the website
+│   ├── run.py                    starts and stops everything: OCR backlog, bot, alert loop; logging setup
+│   ├── config.py                 reads .env (or ENV_FILE), get(key, default)
+│   ├── models.py                 pydantic models: Lesson, Homework, Exam
+│   ├── bot/                      Telegram
+│   │   ├── flow.py               Flow: who may use the bot, sessions, routing text and buttons, /cancel
+│   │   ├── login.py              /login (school, username, password), /link, /logout
+│   │   ├── schedule.py           /week, /today, /homework
+│   │   ├── uploads.py            photos in (Kurs and kind), /list, /search, /show, /delete, /retry
+│   │   ├── quiz.py               /quiz, /words, answering
+│   │   ├── admin.py              /invite, /invites, /revoke
+│   │   ├── common.py             texts, the command menu, limits, Reply and Session
+│   │   └── adapter.py            python-telegram-bot: handlers, sending, polling, start_bot/stop_bot
+│   ├── core/                     no Telegram, no web
+│   │   ├── db.py                 SQLite schema, migrations, connect(), data_dir()
+│   │   ├── accounts.py           WebUntis login, web sessions, per-user data cache, Telegram accounts and invites, throttling
 │   │   ├── materials.py          upload validation, storage, search, vault notes, OCR results
-│   │   ├── vocab.py              vocabulary tests: read word pairs from a photo, answer checking, quiz rounds
-│   │   ├── models.py             pydantic models (Lesson, Homework, Exam, LessonNote, ...)
-│   │   ├── telegram_bot.py       the bot: conversation and commands (Flow) plus python-telegram-bot handlers
-│   │   ├── untis/
-│   │   │   ├── base.py           UntisProvider interface
-│   │   │   ├── schools.py        WebUntis school search for the Telegram login (any school)
-│   │   │   ├── real.py           python-webuntis plus raw REST for homework, for a given school
-│   │   │   ├── mock.py           fixture-backed demo data
-│   │   │   └── fixtures/sample.json
-│   │   ├── ocr/
-│   │   │   ├── __init__.py       enabled(), OcrError, redact_names()
-│   │   │   ├── gemini.py         read_image(bytes, mime) -> text, with retries
-│   │   │   └── worker.py         background thread, one photo at a time, backlog on start
-│   │   ├── llm/                  LLMClient interface and the stub (legacy transcript analysis)
-│   │   ├── agent/agent.py        transcript -> structured note (legacy)
-│   │   └── crosscheck.py         spoken homework vs Untis homework (legacy)
-│   └── scripts/
-│       ├── test_untis.py         login check with the credentials in .env
-│       ├── test_bot_flow.py      offline: migration, conversation, linking
-│       ├── test_ocr.py           offline: worker, statuses, search, redaction
-│       ├── test_vocab.py         offline: answer checking, word sets, the quiz conversation
-│       └── test_alerts.py        offline: what counts as a change, when alerts run, the polling loop
-├── web/index.html                single-page UI: login, schedule, homework, upload, materials, search
+│   │   ├── vocab.py              vocabulary tests: word pairs from a photo, answer checking, quiz rounds, saved test state
+│   │   ├── alerts.py             Untis change alerts for the admin (checks the .env account every few minutes)
+│   │   └── notify.py             hook: the OCR worker tells the bot a photo has been read
+│   ├── untis/
+│   │   ├── base.py               UntisProvider interface
+│   │   ├── schools.py            WebUntis school search for the Telegram login (any school)
+│   │   ├── real.py               python-webuntis plus raw REST for homework, for a given school
+│   │   ├── mock.py               fixture-backed demo data
+│   │   └── fixtures/sample.json
+│   ├── ocr/
+│   │   ├── __init__.py           enabled(), OcrError, redact_names()
+│   │   ├── gemini.py             read_image(bytes, mime) -> text, extract_json(...), with retries
+│   │   └── worker.py             background thread, one photo at a time, backlog on start
+│   └── web/                      optional website (localhost only)
+│       ├── server.py             FastAPI app and its HTTP endpoints
+│       └── index.html            single page: login, schedule, homework, upload, materials, search
+├── tests/                        pytest, offline (Gemini and Telegram faked)
+│   ├── conftest.py               each test: an empty data folder, no .env, patches undone afterwards
+│   ├── test_bot_flow.py          migration, invites, /login, uploads, search, linking, security fixes
+│   ├── test_vocab.py             answer checking, word sets, the quiz conversation, restarts mid-test
+│   ├── test_ocr.py               worker, statuses, search, redaction
+│   └── test_alerts.py            what counts as a change, when alerts run, the polling loop
+├── scripts/check_untis.py        manual: log in with the .env account and print the week
+├── docs/                         idea.md, structure.md, the logo, schedule.png
 ├── data/                         SQLite file and uploaded photos (gitignored)
 ├── vault/                        generated Obsidian notes (gitignored, rebuildable)
+├── pyproject.toml                dependencies, pytest settings
 ├── .env.example
 └── README.md
 ```
 
-**Planned, not built:** a question-answering module over the materials, quiz and exam-prep generation, an `ollama` or `llamacpp` LLM client, a share-with-my-Kurs switch. A separate branch, `llamacpp-provider`, holds an unmerged local llama-server client with quote checking; it touches `models.py`, `agent.py` and `main.py`, so expect conflicts when merging.
+Each test file is one story (a sequence of checks that build on each other) run as one pytest test. The `check` fixture is a soft assert: the test runs to the end and then lists every check that failed.
+
+**Planned, not built:** a question-answering module over the materials, quiz and exam-prep generation, an `ollama` or `llamacpp` LLM client, a share-with-my-Kurs switch.
 
 ## Accounts and security
 
@@ -99,9 +111,6 @@ class UntisProvider:
     def exams(self, start: date, end: date) -> list[Exam]: ...      # [] when the account has no right
     def lesson_at(self, ts: datetime) -> Lesson | None: ...
 
-class LLMClient:
-    def complete_json(self, system: str, user: str, schema: dict) -> dict: ...
-
 # photo reading
 ocr.gemini.read_image(data: bytes, mime: str) -> str               # raises OcrError
 ```
@@ -123,7 +132,6 @@ All endpoints except login, logout and the page need a session (401 otherwise).
 | `GET /api/materials/{id}/file` | the image, only for its owner |
 | `POST /api/materials/{id}/reread` | queue photo reading again, only for its owner |
 | `GET /api/search?q=` | full-text search over the user's materials |
-| `POST /api/analyze` | legacy: transcript to structured note and homework check |
 | `GET /` | the web page |
 
 Uploads accept JPEG, PNG and WebP up to 15 MB, checked from the file's bytes, not its name.
@@ -144,14 +152,14 @@ Uploads accept JPEG, PNG and WebP up to 15 MB, checked from the file's bytes, no
 |---|---|
 | `UNTIS_SERVER`, `UNTIS_SCHOOL`, `UNTIS_CLIENT` | which WebUntis to log in against |
 | `UNTIS_PROVIDER` | `real` or `mock`. Required. |
-| `UNTIS_USER`, `UNTIS_PASSWORD` | only used by `scripts/test_untis.py` and as the default for `RealUntisProvider()` |
+| `UNTIS_USER`, `UNTIS_PASSWORD` | used by the alerts, `scripts/check_untis.py`, and as the default for `RealUntisProvider()` |
 | `TELEGRAM_TOKEN`, `ALLOWED_USERS`, `TELEGRAM_ENABLED` | bot token, admin Telegram IDs (comma-separated), set `0` to not start the bot |
 | `MAX_UPLOADS_PER_USER` | upload cap per person (default 500) |
 | `ALERTS`, `ALERT_MINUTES`, `ALERT_TELEGRAM_ID` | Untis alerts: on by default (`ALERTS=off` disables), check interval (default 10), recipient (default the first admin) |
 | `OCR_PROVIDER` | `gemini` to turn photo reading on (default off) |
 | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_TIMEOUT` | key, model (default `gemini-3.5-flash-lite`), seconds per photo |
-| `LLM_PROVIDER` | `stub` (only option so far) |
 | `DATA_DIR`, `DB_PATH`, `VAULT_PATH` | where data lives (defaults inside the repo) |
+| `ENV_FILE` | read settings from another file instead of `.env`; empty reads none (the tests do this) |
 | `ALLOW_INSECURE_LOGIN` | `1` allows login over plain HTTP. Do not use on a shared network. |
 
 ## Telegram commands
@@ -169,11 +177,11 @@ Uploads accept JPEG, PNG and WebP up to 15 MB, checked from the file's bytes, no
 | `/link CODE` | anyone with a website code | connect a website account (not in the menu) |
 | `/invite [N]`, `/invites`, `/revoke CODE` | admins | manage invite links |
 
-The menu Telegram shows when typing `/` comes from `COMMANDS` and `ADMIN_COMMANDS` in `telegram_bot.py`, published at startup with `setMyCommands` (admins get a longer list through a per-chat scope). `Flow` holds all the logic and has no Telegram imports, which is why `test_bot_flow.py` can test it offline.
+The menu Telegram shows when typing `/` comes from `COMMANDS` and `ADMIN_COMMANDS` in `bot/common.py`, published at startup with `setMyCommands` (admins get a longer list through a per-chat scope). `Flow` (with the feature modules mixed in) holds all the logic and has no Telegram imports, which is why `test_bot_flow.py` can test it offline. `adapter.py` is the only part that talks to Telegram; it also logs a loud warning when another copy of the bot polls the same token (Telegram then splits the messages between them).
 
 ## Vocabulary tests
 
-`vocab.py` has three parts. **Reading:** `gemini.extract_json` sends the photo with a fixed schema (front, back, plus the two language names) and gets structured JSON back, so the columns of a vocab table are read as columns. The result is cleaned (duplicates, pairs with a missing side and over-long entries dropped, at most 200 words) and stored once per upload. Reading new pages is rate-limited per person (`VOCAB_BUILD_LIMIT` per 15 minutes) because each is a paid call. **Checking:** `check_answer` returns correct, close or wrong. Case, punctuation and ß/ss are ignored; text in parentheses and comma, slash or semicolon alternatives are optional; an article may be left out (a note says so) but not swapped for a different one; accents and a one-letter typo (two for words of 9+ letters) count as close; words of 4 letters or fewer must be exact. **Quiz:** a round is up to 25 words, picked by lowest right-minus-missed score (random tie-break) and then shuffled. State lives in the chat session (`Session.quiz`, kept 30 idle minutes); every answer updates the word's counters; the end screen offers `quiz:missed` and `quiz:again` buttons.
+`vocab.py` has three parts. **Reading:** `gemini.extract_json` sends the photo with a fixed schema (front, back, plus the two language names) and gets structured JSON back, so the columns of a vocab table are read as columns. The result is cleaned (duplicates, pairs with a missing side and over-long entries dropped, at most 200 words) and stored once per upload. Reading new pages is rate-limited per person (`VOCAB_BUILD_LIMIT` per 15 minutes) because each is a paid call. **Checking:** `check_answer` returns correct, close or wrong. Case, punctuation and ß/ss are ignored; text in parentheses and comma, slash or semicolon alternatives are optional; an article may be left out (a note says so) but not swapped for a different one; accents and a one-letter typo (two for words of 9+ letters) count as close; words of 4 letters or fewer must be exact. **Quiz:** a round is up to 25 words, picked by lowest right-minus-missed score (random tie-break) and then shuffled. Textbook placeholders (`etw.`, `jdn`, `sb`, `sth`, `algo`, `alguien`, `qc`, `iets` and similar) are optional on both sides. State lives in the chat session and is saved to `quiz_state` after every answer, so a restart or a long pause continues the test; every answer updates the word's counters; the end screen offers `quiz:missed` and `quiz:again` buttons.
 
 ## Untis alerts
 
@@ -181,15 +189,11 @@ The menu Telegram shows when typing `/` comes from `COMMANDS` and `ADMIN_COMMAND
 
 It is **on by default** whenever `UNTIS_PROVIDER=real`, `UNTIS_USER` and `UNTIS_PASSWORD` are set, and an admin ID exists (`ALERTS=off` turns it off). It can only watch that one account: everyone else's schedule is a snapshot from their last `/login`, because their passwords are never stored.
 
-## Legacy (transcription path)
-
-`llm/`, `agent/agent.py`, `crosscheck.py` and `POST /api/analyze` turn a pasted lesson transcript into a structured note and mark spoken homework as in or not in Untis. They run on the keyword stub, are no longer shown on the page, and are kept because the same extraction and matching ideas will be needed for questions over materials.
-
 ## Workstreams (suggestion)
 
 | Stream | Scope |
 |---|---|
-| Ask and prepare | `LLMClient` for Gemini or a local model, retrieval over `materials`, answers with citations, mock exams, revision plan |
+| Ask and prepare | an LLM client (Gemini or a local model), retrieval over `materials`, answers with citations, mock exams, revision plan |
 | Photos | reading quality, redaction beyond name fields, board photos and book pages, sharing within a Kurs |
 | Access | HTTPS tunnel, hosting |
 | Demo | web polish, pitch, demo data |

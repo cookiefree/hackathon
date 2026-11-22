@@ -4,3 +4,5 @@ data/
 vault/
 __pycache__/
 .obsidian/
+*.egg-info/
+.pytest_cache/

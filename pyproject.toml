@@ -1,0 +1,24 @@
+[project]
+name = "untisian"
+version = "0.1.0"
+description = "A Telegram bot for school: files photos of your material, reads them, quizzes vocabulary, knows your WebUntis timetable."
+requires-python = ">=3.11"
+dependencies = [
+    "python-telegram-bot>=22",
+    "webuntis",
+    "pydantic>=2",
+    "requests",
+]
+
+[project.optional-dependencies]
+web = ["fastapi", "uvicorn", "python-multipart"]
+dev = ["pytest", "pyflakes"]
+
+[tool.setuptools.packages.find]
+include = ["untisian*"]
+
+[tool.setuptools.package-data]
+untisian = ["untis/fixtures/*.json", "web/index.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

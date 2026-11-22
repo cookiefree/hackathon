@@ -39,11 +39,11 @@ See the README for details and limits.
 - **Obsidian (optional):** a folder of Markdown notes, one per photo, with the image embedded. A reading view for one person's own data, not the main interface.
 
 ## Architecture (short)
-- **Backend:** Python and FastAPI. SQLite with full-text search. Photos on disk.
+- **Backend:** Python, one package (`untisian`, started with `python -m untisian`). SQLite with full-text search. Photos on disk. The website (FastAPI) is optional.
 - **Untis:** python-webuntis plus the raw homework endpoint, behind a provider interface with a mock for demos.
 - **Accounts:** in Telegram, an invite link creates the account (`tg:<telegram id>`), and `/login` adds the school data for whichever school the person picks. On the website, login is a check against the school set in `.env`. Passwords are used once and never stored; web sessions are random tokens stored hashed.
 - **Photo reading:** Gemini API, called from a background worker, one photo at a time.
-- **LLM for answers:** behind one interface (`LLMClient`). Only a stub exists. Candidates are Gemini, Claude, or a local model through llama.cpp.
+- **LLM for answers:** not built. Candidates are Gemini, Claude, or a local model through llama.cpp.
 - **Interfaces:** the Telegram bot (main) and the web page (optional), both calling the same backend code. The bot connects outward to Telegram, so nothing needs to be reachable from the internet.
 
 ## Privacy and legality
@@ -57,7 +57,7 @@ Be straight about this in the pitch, because it is the hardest part of the idea.
 
 ## What changed, and why
 - **Transcribing lessons was dropped as the focus.** Recording a class needs the teacher's consent (§201 StGB), whole-lesson audio is noisy and large, and a phone is a poor long recorder. Photos of material are easier to get, easier to read, and legally lighter.
-- The old pieces still exist in the backend (`/api/analyze`, the agent and the homework cross-check, behind a stub LLM). Transcription could come back later as an optional input.
+- The old pieces (`/api/analyze`, the agent and the homework cross-check, behind a stub LLM) were removed in the restructure and are in git history. Transcription could come back later as an optional input.
 - **Untis exams are not readable** with a student account (`no right for getExams()`), so exam dates cannot come from Untis. Past exams uploaded as photos are the material instead.
 
 ## Demo plan

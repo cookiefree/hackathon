@@ -1,0 +1,88 @@
+import sqlite3
+from pathlib import Path
+
+from untisian import config
+
+def data_dir() -> Path:
+    """Where photos and the database live. Read on every call, so tests can point it elsewhere."""
+    return Path(config.get("DATA_DIR", str(config.ROOT / "data")))
+
+
+MATERIALS_SQL = """
+CREATE TABLE IF NOT EXISTS materials (
+    id         INTEGER PRIMARY KEY,
+    owner      TEXT NOT NULL DEFAULT 'local',    -- telegram user id, or 'local' for the web page
+    visibility TEXT NOT NULL DEFAULT 'private',  -- private | kurs (shared with the Kurs)
+    kurs       TEXT NOT NULL,                    -- Untis course code, e.g. "E5-GK3"
+    kind       TEXT NOT NULL,                    -- exam | worksheet | book | board | notes
+    title      TEXT NOT NULL DEFAULT '',
+    filename   TEXT NOT NULL,                    -- original name, display only
+    path       TEXT NOT NULL,                    -- stored file, relative to data_dir()
+    sha256     TEXT NOT NULL,
+    ocr_text   TEXT NOT NULL DEFAULT '',
+    ocr_status TEXT NOT NULL DEFAULT 'off',      -- off | pending | done | failed
+    created    TEXT NOT NULL,
+    UNIQUE (owner, kurs, sha256)
+);
+"""
+ACCOUNTS_SQL = """
+CREATE TABLE IF NOT EXISTS sessions (          -- logged-in browsers; only a hash of the token is stored
+    token_hash TEXT PRIMARY KEY, user_key TEXT NOT NULL, created TEXT NOT NULL, expires TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_data (         -- a user's own Untis data, fetched when they log in
+    user_key TEXT NOT NULL, name TEXT NOT NULL, json TEXT NOT NULL, fetched TEXT NOT NULL,
+    PRIMARY KEY (user_key, name)
+);
+CREATE TABLE IF NOT EXISTS link_codes (        -- one-time codes to connect a Telegram account
+    code TEXT PRIMARY KEY, user_key TEXT NOT NULL, expires TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS telegram_links (
+    telegram_id TEXT PRIMARY KEY, user_key TEXT NOT NULL, linked TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS telegram_users (    -- people who joined the bot with an invite (or are admins)
+    telegram_id TEXT PRIMARY KEY, joined TEXT NOT NULL, via TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS invites (           -- t.me/<bot>?start=<code>
+    code TEXT PRIMARY KEY, created TEXT NOT NULL, expires TEXT NOT NULL,
+    max_uses INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0
+);
+"""
+VOCAB_SQL = """
+CREATE TABLE IF NOT EXISTS vocab_sets (        -- word pairs read from one uploaded page
+    id INTEGER PRIMARY KEY, material_id INTEGER NOT NULL UNIQUE, owner TEXT NOT NULL,
+    lang_front TEXT NOT NULL DEFAULT '', lang_back TEXT NOT NULL DEFAULT '', created TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vocab_items (
+    id INTEGER PRIMARY KEY, set_id INTEGER NOT NULL, front TEXT NOT NULL, back TEXT NOT NULL,
+    correct INTEGER NOT NULL DEFAULT 0, missed INTEGER NOT NULL DEFAULT 0, last_seen TEXT
+);
+CREATE TABLE IF NOT EXISTS quiz_state (        -- each person's running (or last finished) test, so restarts keep it
+    telegram_id TEXT PRIMARY KEY, json TEXT NOT NULL, running INTEGER NOT NULL, updated TEXT NOT NULL
+);
+"""
+SCHEMA = (MATERIALS_SQL + ACCOUNTS_SQL + VOCAB_SQL
+          + "CREATE VIRTUAL TABLE IF NOT EXISTS materials_fts USING fts5(title, ocr_text);")
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    """First schema had no owner/visibility. Rebuild the table, keeping every row (owner 'local')."""
+    cols = [r["name"] for r in con.execute("PRAGMA table_info(materials)")]
+    if cols and "owner" not in cols:
+        con.executescript(
+            "ALTER TABLE materials RENAME TO materials_old;" + MATERIALS_SQL +
+            "INSERT INTO materials (id, kurs, kind, title, filename, path, sha256, ocr_text, created) "
+            "SELECT id, kurs, kind, title, filename, path, sha256, ocr_text, created FROM materials_old;"
+            "DROP TABLE materials_old;")
+        cols = [r["name"] for r in con.execute("PRAGMA table_info(materials)")]
+    if cols and "ocr_status" not in cols:
+        con.execute("ALTER TABLE materials ADD COLUMN ocr_status TEXT NOT NULL DEFAULT 'off'")
+
+
+def connect() -> sqlite3.Connection:
+    """New connection per call; FastAPI runs sync endpoints in a thread pool."""
+    data_dir().mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(Path(config.get("DB_PATH", str(data_dir() / "app.db"))))
+    con.row_factory = sqlite3.Row
+    _migrate(con)
+    con.executescript(SCHEMA)
+    return con
