@@ -19,7 +19,7 @@
 - **Knows your timetable.** After `/login` with your WebUntis account: `/week`, `/today`, `/homework`.
 - **Talks.** Just write to it: "what's on my worksheet about Ableitungen?", "what do I have today?", "test me on my Spanish words". It looks things up in your uploads and timetable and answers, in your language.
 
-Type `/` in the chat to see all commands.
+It talks English by default; `/deutsch` switches everything to German, `/english` back. Type `/` in the chat to see all commands.
 
 ## With Obsidian
 

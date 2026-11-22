@@ -103,17 +103,17 @@ def test_vocabulary(check):
 
     # ---- 3. the conversation ------------------------------------------------------------------------
     r = f.on_text(111, "das Haus")
-    check("a right answer: Correct, then the next word", r.text.startswith("Correct.") and "2/4  comer" in r.text)
+    check("a right answer: Correct, then the next word", r.text.startswith("correct.") and "2/4  comer" in r.text)
     r = f.on_text(111, "trinken")
-    check("a wrong answer shows the right one and moves on", "Not quite. It's: essen" in r.text and "3/4  la cocina" in r.text)
+    check("a wrong answer shows the right one and moves on", "not quite, it's: essen" in r.text and "3/4  la cocina" in r.text)
     r = f.on_text(111, "die Kuche")
-    check("a near miss counts, with a note", r.text.startswith("Correct.") and "accents" in r.text and "4/4  grande" in r.text)
+    check("a near miss counts, with a note", r.text.startswith("correct.") and "accents" in r.text and "4/4  grande" in r.text)
     r = f.on_text(111, "?")
-    check("? skips and shows the answer", "The answer: groß" in r.text)
-    check("the summary has the score, the missed words and two buttons", "Done: 2/4 right." in r.text
+    check("? skips and shows the answer", "the answer: groß" in r.text)
+    check("the summary has the score, the missed words and two buttons", "done: 2/4 right." in r.text
           and "comer = essen" in r.text and "grande = groß" in r.text
           and [b[1] for b in [x for row in r.buttons for x in row]] == ["quiz:missed", "quiz:again"]
-          and "Practise the 2 I missed" in r.buttons[0][0][0])
+          and "practise the 2 i missed" in r.buttons[0][0][0])
     check("the test is over", f.sessions[111].state is None and f.sessions[111].quiz is None)
     sid = vocab.set_for_material(m1.id, "tg:111")["id"]
     stats = {r["front"]: (r["correct"], r["missed"]) for r in vocab.items_of(sid)}
@@ -123,7 +123,7 @@ def test_vocabulary(check):
     check("'practise missed' tests only those words", "2 words" in r.text and r.text.count("/2") == 1
           and ("comer" in r.text or "grande" in r.text))
     f.on_text(111, "essen"); r = f.on_text(111, "gross")
-    check("a spelling variant (ss for ß) is accepted", "Done: 2/2 right." in r.text and [b[1] for row in r.buttons for b in row] == ["quiz:again"])
+    check("a spelling variant (ss for ß) is accepted", "done: 2/2 right." in r.text and [b[1] for row in r.buttons for b in row] == ["quiz:again"])
     r = f.on_choice(111, "quiz:again")
     check("'test everything again' starts a full round", "4 words" in r.text)
     f.cancel(111)
@@ -134,13 +134,13 @@ def test_vocabulary(check):
     card = f.sessions[111].quiz.current
     check("reverse asks the German word and expects Spanish", "Deutsch -> Spanisch" in r.text
           and card.ask in {"das Haus", "essen", "die Küche", "groß"} and card.answer in {"la casa", "comer", "la cocina", "grande"})
-    check("...and checks against the Spanish side", f.on_text(111, card.answer).text.startswith("Correct."))
+    check("...and checks against the Spanish side", f.on_text(111, card.answer).text.startswith("correct."))
     f.cancel(111)
 
     f.quiz(111, str(m1.id))
-    check("a photo during a test is refused", "vocabulary test" in f.on_files(111, [(png((2, 2, 2)), "z.png")]).text)
-    check("logging in during a test is refused", "vocabulary test" in f.login(111).text)
-    check("a second /quiz during a test is refused", "Finish what" in f.quiz(111, str(m1.id)).text)
+    check("a photo during a test is refused", "vocab test" in f.on_files(111, [(png((2, 2, 2)), "z.png")]).text)
+    check("logging in during a test is refused", "vocab test" in f.login(111).text)
+    check("a second /quiz during a test is refused", "finish what" in f.quiz(111, str(m1.id)).text)
     f.cancel(111)
     f.on_files(111, [(png((3, 3, 3)), "z2.png")])
     check("/quiz is refused while photos are waiting", "photos waiting" in f.quiz(111, str(m1.id)).text)
@@ -150,11 +150,11 @@ def test_vocabulary(check):
     w = f.words(111, str(m1.id)).text
     check("/words lists the pairs with a header", "Unidad 3: 4 words" in w and "la casa = das Haus" in w and "grande = groß" in w)
     check("/quiz without a number uses the latest page", "Unidad 3" in f.quiz(111).text); f.cancel(111)
-    check("/quiz for someone else's upload says no such upload", "No upload" in tb.Flow().quiz(111, "9999").text)
+    check("/quiz for someone else's upload says no such upload", "no upload" in tb.Flow().quiz(111, "9999").text)
     m_other = materials.save_upload(png((9, 9, 9)), "o.png", "ES-GK1", "vocab", owner="tg:222")
-    check("...and a stranger's page can't be tested", "No upload" in f.quiz(111, str(m_other.id)).text and "No upload" in f.words(111, str(m_other.id)).text)
+    check("...and a stranger's page can't be tested", "no upload" in f.quiz(111, str(m_other.id)).text and "no upload" in f.words(111, str(m_other.id)).text)
     g = tb.Flow(); g.start(777, accounts.create_invite(2))
-    check("a user with no pages is told what to do", "vocabulary page first" in g.quiz(777).text)
+    check("a user with no pages is told what to do", "vocab page first" in g.quiz(777).text)
 
     vocab.ROUND_SIZE = 2
     with connect() as con:      # set the history explicitly: grande and comer are the weakest words
@@ -168,7 +168,7 @@ def test_vocabulary(check):
     vocab.ROUND_SIZE = 25
 
     r = f.on_files(111, [(png((6, 7, 8)), "v2.png")]); f.on_text(111, "ES-GK1"); r = f.on_choice(111, "kind:vocab")
-    check("saving a page as 'vocab' points to /quiz", "Test yourself with /quiz" in r.text)
+    check("saving a page as 'vocab' points to /quiz", "test yourself with /quiz" in r.text)
 
     # failures are explained, not crashed
     gemini.extract_json = lambda *a: (_ for _ in ()).throw(OcrError("Gemini returned HTTP 503: busy"))
@@ -176,7 +176,7 @@ def test_vocabulary(check):
     r = f.quiz(111, str(m2.id))
     check("a Gemini failure gives a friendly message and stores nothing", "couldn't read that page" in r.text and vocab.set_for_material(m2.id, "tg:111") is None)
     gemini.extract_json = lambda *a: {"front_language": "?", "back_language": "?", "items": []}
-    check("a page without vocabulary says so", "couldn't find a vocabulary list" in f.quiz(111, str(m2.id)).text)
+    check("a page without vocabulary says so", "couldn't find a vocab list" in f.quiz(111, str(m2.id)).text)
     gemini.extract_json = fake_extract
     os.environ["OCR_PROVIDER"] = "none"
     check("with photo reading off the message says why", "switched on" in f.quiz(111, str(m2.id)).text)
@@ -205,11 +205,11 @@ def test_vocabulary(check):
         check(f"'{word}' ends a test too", "stopped" in f.on_text(111, word).text and f.sessions[111].quiz is None)
     f.quiz(111, str(m1.id))
     r = f.stop(111)
-    check("/stop right at the start just stops", r.text.startswith("Test stopped.") and vocab.load_quiz(111) is None)
-    check("/stop without a test behaves like /cancel", "Dropped" in f.stop(111).text)
+    check("/stop right at the start just stops", r.text.startswith("test stopped.") and vocab.load_quiz(111) is None)
+    check("/stop without a test behaves like /cancel", "dropped" in f.stop(111).text)
     halt = vocab.Quiz(1, "t", "A", "B", [vocab.Card(vocab.items_of(sid)[0]["id"], "anhalten", "stop")])
     f._quiz_begin(111, halt, False)
-    check("when 'stop' is the right answer it counts as the answer", f.on_text(111, "stop").text.startswith("Correct."))
+    check("when 'stop' is the right answer it counts as the answer", f.on_text(111, "stop").text.startswith("correct."))
     restarted = tb.Flow()
     restarted.quiz(111, str(m1.id)); restarted.on_text(111, restarted.sessions[111].quiz.current.answer)
     check("/stop works after a restart too", "stopped after 1 word" in tb.Flow().stop(111).text)
@@ -236,7 +236,7 @@ def test_vocabulary(check):
     second = f.sessions[111].quiz.current
     restarted = tb.Flow()                                  # a fresh bot process: nothing in memory
     r = restarted.on_text(111, second.answer)
-    check("after a restart the next answer continues the test", r.text.startswith("Correct.")
+    check("after a restart the next answer continues the test", r.text.startswith("correct.")
           and restarted.sessions[111].quiz.pos == 2 and restarted.sessions[111].quiz.correct == 2)
     check("/cancel after a restart stops the stored test", "stopped" in tb.Flow().cancel(111).text
           and vocab.load_quiz(111) is None)
@@ -246,11 +246,11 @@ def test_vocabulary(check):
     while fl.sessions[111].quiz is not None:
         fl.on_text(111, "?")
     again = tb.Flow().on_choice(111, "quiz:missed")
-    check("the 'practise the missed' button still works after a restart", again.text.startswith("Vocabulary test"))
+    check("the 'practise the missed' button still works after a restart", again.text.startswith("vocab test"))
     tb.Flow().cancel(111)
 
     # deleting an upload removes its words
-    check("deleting the upload removes its word set", f.delete(111, str(m1.id)).text.startswith("Deleted")
+    check("deleting the upload removes its word set", f.delete(111, str(m1.id)).text.startswith("deleted")
           and vocab.set_for_material(m1.id, "tg:111") is None
           and not [r for r in vocab.items_of(sid)])
 
@@ -280,7 +280,7 @@ def test_vocabulary(check):
     check("the vault note has a Spanisch | Deutsch table", "| Spanisch | Deutsch |" in note
           and "| la casa | das Haus |" in note and "## Text" not in note)
     check("search finds a word from the list", any(x.id == v.id for x in materials.search_materials("cocina", "tg:111")))
-    check("/retry reads the words again", "Reading" in f.retry(111, str(v.id)).text and wait(read_done) and len(calls) == 2)
+    check("/retry reads the words again", "reading" in f.retry(111, str(v.id)).text and wait(read_done) and len(calls) == 2)
     gemini.extract_json = lambda *a: {"front_language": "", "back_language": "", "items": []}
     w = materials.save_upload(png((8, 8, 8)), "w.png", "ES-GK1", "vocab", owner="tg:111")
     wait(lambda: materials.material_text(w.id, "tg:111")[0].ocr_status == "done")
@@ -303,6 +303,6 @@ def test_vocabulary(check):
     gemini.extract_json = fake_extract
 
     # the menu
-    names = [c for c, _ in tb.COMMANDS]
+    names = [c for c, *_ in tb.COMMANDS]
     check("/quiz and /words are in the menu and have handlers", {"quiz", "words"} <= set(names)
           and {"quiz", "words"} <= {c for h in tb.build_application("123456:TEST-TOKEN-NOT-REAL").handlers[0] if hasattr(h, "commands") for c in h.commands})

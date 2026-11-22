@@ -189,7 +189,8 @@ def make_quiz(vset, title: str, reverse: bool = False, only_ids: set[int] | None
 
 # --- checking answers ------------------------------------------------------------------------
 
-Verdict = namedtuple("Verdict", "kind note")      # kind: correct | close | wrong
+Verdict = namedtuple("Verdict", "kind note reason form", defaults=("", ""))
+# kind: correct | close | wrong; reason: article | accents | spelling (why it was close); form: the right spelling
 
 ARTICLES = {"der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "the", "a", "an", "to",
             "el", "la", "los", "las", "un", "una", "le", "les", "l", "il", "lo", "uno", "une", "gli",
@@ -279,12 +280,12 @@ def check_answer(given: str, expected: str) -> Verdict:
         if g_stem == v_stem:
             if same_article:
                 return Verdict("correct", "")
-            best = Verdict("close", f"Say it with the article: {original}")
+            best = Verdict("close", f"Say it with the article: {original}", "article", original)
         elif _plain(g_stem) == _plain(v_stem):
-            best = Verdict("close", f"Mind the accents: {original}")
+            best = Verdict("close", f"Mind the accents: {original}", "accents", original)
         elif _tolerance(v_stem) and _distance(_plain(g_stem), _plain(v_stem)) <= _tolerance(v_stem):
             if best.kind != "close":
-                best = Verdict("close", f"Almost, it is spelled: {original}")
+                best = Verdict("close", f"Almost, it is spelled: {original}", "spelling", original)
     return best
 
 

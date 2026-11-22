@@ -39,7 +39,7 @@ def test_chatting(check):
     # plain talk
     script[:] = [text("Hi! **How** can I help?")]
     r = f.on_text(111, "hello")
-    check("a hello gets an answer from the model", r.text == "Hi! How can I help?")
+    check("a hello gets an answer from the model", r.text == "hi! How can I help?")
     check("Markdown bold is removed", "**" not in r.text)
     check("the system prompt and the tools are sent", "Untisian" in sent[0]["systemInstruction"]["parts"][0]["text"]
           and sent[0]["tools"] == chat.TOOLS)
@@ -52,14 +52,14 @@ def test_chatting(check):
     sent.clear()
     script[:] = [call("search_uploads", query="Ableitung"), text(f"It's on #{m.id}: f'(x) = 2x.")]
     r = f.on_text(111, "what did the worksheet say about Ableitung?")
-    check("the answer comes after the tool ran", r.text == f"It's on #{m.id}: f'(x) = 2x." and len(sent) == 2)
+    check("the answer comes after the tool ran", r.text == f"it's on #{m.id}: f'(x) = 2x." and len(sent) == 2)
     second = sent[1]["contents"]
     result = second[-1]["parts"][0]["functionResponse"]
     check("the search result is passed back to the model", result["name"] == "search_uploads"
           and f"#{m.id}" in result["response"]["result"])
     check("the model's call is echoed back as returned", second[-2]["parts"][0]["functionCall"]["name"] == "search_uploads")
     check("earlier messages are remembered", second[0]["parts"][0]["text"] == "hello"
-          and second[1]["parts"][0]["text"] == "Hi! How can I help?")
+          and second[1]["parts"][0]["text"] == "hi! How can I help?")
 
     # only the person's own uploads
     other = materials.save_upload(png((9, 9, 9)), "b.png", "M-GK4", "exam", owner="tg:222")
@@ -67,7 +67,7 @@ def test_chatting(check):
     sent.clear()
     script[:] = [call("read_upload", number=other.id), text("Not yours.")]
     f.on_text(111, f"show me #{other.id}")
-    check("reading someone else's upload finds nothing", "No upload with that number" in
+    check("reading someone else's upload finds nothing", "no upload with that number" in
           sent[1]["contents"][-1]["parts"][0]["functionResponse"]["response"]["result"])
 
     # schedule tools work through the same commands
@@ -87,7 +87,7 @@ def test_chatting(check):
     check("'test me' starts the quiz and shows the first question", "1/1  la casa" in r.text
           and f.sessions[111].state == "quiz")
     r = f.on_text(111, "das Haus")
-    check("the next message answers the quiz, not the chat", "Done: 1/1 right." in r.text and not script)
+    check("the next message answers the quiz, not the chat", "done: 1/1 right." in r.text and not script)
 
     # limits and failures
     script[:] = [call("today")] * 5
@@ -107,7 +107,7 @@ def test_chatting(check):
     f.cancel(111)
     check("/cancel forgets the conversation", not f._histories.get(111))
     os.environ["OCR_PROVIDER"] = "none"
-    check("without Gemini, text gets the old hint", "Send me a photo" in f.on_text(111, "hi").text)
+    check("without Gemini, text gets the old hint", "send me a photo" in f.on_text(111, "hi").text)
     os.environ["OCR_PROVIDER"] = "gemini"
 
     # while a photo waits for its kind, text is not sent to the chat

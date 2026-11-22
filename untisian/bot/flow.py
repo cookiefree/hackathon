@@ -16,7 +16,8 @@ from collections.abc import Callable
 
 from untisian.bot.admin import AdminCommands
 from untisian.bot.chat import ChatCommands
-from untisian.bot.common import INVITE_ONLY, HELP, SESSION_IDLE, WELCOME, Reply, Session
+from untisian.bot import texts
+from untisian.bot.common import SESSION_IDLE, Reply, Session
 from untisian.bot.login import LoginCommands
 from untisian.bot.quiz import QuizCommands
 from untisian.bot.schedule import ScheduleCommands
@@ -37,6 +38,40 @@ class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminC
         self.from_telegram: set[int] = set()              # material ids uploaded here, announced when read
         self._lock = threading.RLock()                    # handlers run in threads; sessions are shared state
         self._histories: dict = {}                        # uid -> recent chat messages (chat.py), memory only
+        self._langs: dict[int, str] = {}                  # uid -> 'en' | 'de', cached from the database
+
+    # --- what the bot says ----------------------------------------------------------------------
+
+    def lang(self, uid: int) -> str:
+        with self._lock:
+            if uid not in self._langs:
+                if len(self._langs) > 2000:
+                    self._langs.clear()
+                self._langs[uid] = accounts.language_of(uid)
+            return self._langs[uid]
+
+    def t(self, uid: int, key: str, **values) -> str:
+        """One text from texts.py, in this person's language."""
+        return texts.say(self.lang(uid), key, **values)
+
+    def r(self, uid: int, key: str, **values) -> Reply:
+        return Reply(self.t(uid, key, **values))
+
+    def err(self, uid: int, error: Exception) -> str:
+        """A core error (AuthError, UploadError, VocabError) in this person's language."""
+        return texts.error(self.lang(uid), str(error))
+
+    def _set_lang(self, uid: int, lang: str) -> Reply:
+        accounts.set_language(uid, lang)
+        with self._lock:
+            self._langs[uid] = lang
+        return self.r(uid, "lang_set")
+
+    def deutsch(self, uid: int, *args: str) -> Reply:
+        return self._set_lang(uid, "de")
+
+    def english(self, uid: int, *args: str) -> Reply:
+        return self._set_lang(uid, "en")
 
     # --- who is this --------------------------------------------------------------------------
 
@@ -44,28 +79,25 @@ class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminC
         """The account this Telegram user acts as, or None if they have not joined."""
         return accounts.owner_for_telegram(uid)
 
-    @staticmethod
-    def refuse(uid: int) -> Reply:
-        return Reply(INVITE_ONLY)
+    def refuse(self, uid: int) -> Reply:
+        return self.r(uid, "invite_only")
 
     def _admin_only(self, uid: int) -> Reply | None:
-        return None if uid in allowed_users() else Reply("Only the admins can do that.")
+        return None if uid in allowed_users() else self.r(uid, "admins_only")
 
     def whoami(self, uid: int) -> Reply:
-        return Reply(f"Your Telegram ID is {uid}")
+        return self.r(uid, "whoami", id=uid)
 
     def start(self, uid: int, *args: str) -> Reply:
         if self.resolve(uid) is not None:
-            return Reply(HELP)
+            return self.r(uid, "help")
         code = args[0] if args else ""
         if code and accounts.redeem_invite(code, uid):
-            return Reply(WELCOME)
-        if code:
-            return Reply("That invite link is invalid, used up or expired. Ask for a new one.")
-        return Reply(INVITE_ONLY)
+            return self.r(uid, "welcome")
+        return self.r(uid, "bad_invite" if code else "invite_only")
 
     def help(self, uid: int, *args: str) -> Reply:
-        return Reply(HELP)
+        return self.r(uid, "help")
 
     # --- uploading ----------------------------------------------------------------------------
 
@@ -111,18 +143,17 @@ class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminC
         with self._lock:
             s = self._s(uid)
             if s.state == "kind":
-                return Reply("Pick the kind with the buttons above, or send /cancel.")
+                return self.r(uid, "pick_kind_buttons")
             talk = s.state is None and not s.pending
         if talk:
             return self.chat(uid, text)
         with self._lock:
             s = self._s(uid)
             if s.state != "kurs":
-                return Reply("Send me a photo to start. Type / to see the commands.")
+                return self.r(uid, "send_photo")
             text = text.strip()
             if not KURS_RE.match(text):
-                return Reply("A Kurs starts with a letter or digit and may contain '-', '.', '_' or spaces, "
-                             "up to 40 characters. Try again.")
+                return self.r(uid, "bad_kurs")
             return self._ask_kind(uid, text)
 
     def on_choice(self, uid: int, data: str) -> Reply:
@@ -133,7 +164,7 @@ class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminC
             s = self._s(uid)
             if key == "school" and s.state == "login_pick" and value.isdecimal() and int(value) < len(s.schools):
                 s.school, s.state = s.schools[int(value)], "login_user"
-                return Reply(f"{s.school.name}. What's your username there?")
+                return self.r(uid, "ask_username", school=s.school.name)
             if key == "kurs" and s.state == "kurs" and KURS_RE.match(value):
                 return self._ask_kind(uid, value)
             ready = key == "kind" and s.state == "kind" and value in KINDS and bool(s.kurs)
@@ -143,7 +174,7 @@ class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminC
             return self._quiz_restart(uid, *again)
         if ready:
             return self._save(uid, value)
-        return Reply("That choice has expired. Send the photos again.")
+        return self.r(uid, "choice_expired")
 
     def stop(self, uid: int, *args: str) -> Reply:
         """/stop: end a running test with its score so far; otherwise the same as /cancel."""
@@ -160,5 +191,5 @@ class Flow(LoginCommands, ScheduleCommands, UploadCommands, QuizCommands, AdminC
         stored = vocab.load_quiz(uid)
         if (s and s.quiz) or (stored and stored[1]):
             vocab.save_quiz(uid, None)
-            return Reply("Test stopped. Send /quiz to start another.")
-        return Reply("Dropped. Nothing was saved.")
+            return self.r(uid, "test_stopped")
+        return self.r(uid, "dropped")

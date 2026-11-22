@@ -78,14 +78,14 @@ def test_bot_conversation(check):
     r = f.invite(111)
     check("/invite returns a t.me deep link with a code", r.text.count("https://t.me/testbot?start=") == 1 and "25 people" in r.text)
     check("/invite N sets the size", "3 people" in f.invite(111, "3").text)
-    check("non-admin cannot invite, list or revoke", all("Only the admins" in x.text for x in
+    check("non-admin cannot invite, list or revoke", all("only admins" in x.text for x in
           (f.invite(222), f.invites(222), f.revoke(222, "x"))))
 
     # ---- 4. joining -------------------------------------------------------------------------------
     code = accounts.create_invite(2)
     r = f.start(222, code)
-    check("a valid invite joins the user", "You're in" in r.text and f.resolve(222) == "tg:222")
-    check("a joined user re-opening the link does not use a slot", "Type /" in f.start(222, code).text
+    check("a valid invite joins the user", "you're in" in r.text and f.resolve(222) == "tg:222")
+    check("a joined user re-opening the link does not use a slot", "type /" in f.start(222, code).text
           and next(i for i in accounts.list_invites() if i["code"] == code)["uses"] == 1)
     f.start(223, code)
     check("a third person is refused once the invite is used up", "invalid" in f.start(224, code).text and f.resolve(224) is None)
@@ -95,19 +95,19 @@ def test_bot_conversation(check):
         con.execute("INSERT INTO invites (code, created, expires, max_uses) VALUES ('old', '2000-01-01T00:00:00', '2000-01-02T00:00:00', 5)")
     check("an expired invite is refused", "invalid" in f.start(226, "old").text)
     check("/invites lists them with usage", "1/2" in f.invites(111).text or "2/2" in f.invites(111).text)
-    check("/revoke works for admins, unknown code reported", "Turned off" in f.revoke(111, accounts.create_invite(1)) .text
-          and "No invite" in f.revoke(111, "nope").text)
+    check("/revoke works for admins, unknown code reported", "turned off" in f.revoke(111, accounts.create_invite(1)) .text
+          and "no invite" in f.revoke(111, "nope").text)
 
     # ---- 5. uploading (no school account yet) ------------------------------------------------------
     r = f.on_files(222, [(png((1, 2, 3)), "a.png")])
-    check("photo -> asks for the Kurs; no timetable yet so no buttons", "Which Kurs" in r.text and not r.buttons and "Type it" in r.text)
+    check("photo -> asks for the Kurs; no timetable yet so no buttons", "which kurs" in r.text and not r.buttons and "type it" in r.text)
     r = f.on_text(222, "../../etc")
-    check("bad Kurs rejected", "Try again" in r.text and f.sessions[222].state == "kurs")
+    check("bad Kurs rejected", "try again" in r.text and f.sessions[222].state == "kurs")
     r = f.on_text(222, "M-GK4")
     check("Kurs typed -> asks the kind", "kind" in r.text and len(r.buttons) == len(tb.KINDS) == 6)
     check("unknown kind refused", "expired" in f.on_choice(222, "kind:hack").text)
     r = f.on_choice(222, "kind:exam")
-    check("saved under the user's own account", r.text.startswith("Saved 1 to M-GK4 as exam")
+    check("saved under the user's own account", r.text.startswith("saved 1 to M-GK4 as exam")
           and len(materials.list_materials(owner="tg:222")) == 1)
     check("each person sees only their own uploads", not materials.list_materials(owner="tg:111", kurs="M-GK4"))
     r = f.on_files(222, [(png((1, 2, 3)), "a.png")])
@@ -116,9 +116,9 @@ def test_bot_conversation(check):
     r2 = f.on_choice(222, "kind:exam")
     check("same photo again is a duplicate", "1 already uploaded" in r2.text)
     f.on_files(222, [(b"not an image", "x.png")]); f.on_text(222, "D-GK4"); r = f.on_choice(222, "kind:notes")
-    check("a non-image is reported, not stored", "Problems" in r.text and len(materials.list_materials(owner="tg:222")) == 1)
+    check("a non-image is reported, not stored", "problems" in r.text and len(materials.list_materials(owner="tg:222")) == 1)
     f.on_files(222, [(png((5, 5, 5)), "c.png")])
-    check("/cancel drops the photos", "Nothing was saved" in f.cancel(222).text and 222 not in f.sessions)
+    check("/cancel drops the photos", "nothing saved" in f.cancel(222).text and 222 not in f.sessions)
     orig, materials.MAX_PER_OWNER = materials.MAX_PER_OWNER, 1
     f.on_files(222, [(png((6, 6, 6)), "d.png")]); f.on_text(222, "M-GK4"); r = f.on_choice(222, "kind:exam")
     materials.MAX_PER_OWNER = orig
@@ -138,13 +138,13 @@ def test_bot_conversation(check):
     check("/week before login asks for /login", "/login" in f.week(223).text and "/login" in f.homework(223).text)
     check("/login by a stranger is refused", "invite-only" in f.login(999).text)
     check("/login with details typed after it refuses and says what to do", "on its own" in f.login(223, "anna", "demo").text)
-    check("a bare /login starts by asking for the school", "Which school" in f.login(223).text and f.sessions[223].state == "login_school")
+    check("a bare /login starts by asking for the school", "which school" in f.login(223).text and f.sessions[223].state == "login_school")
     check("the school and username steps are not secret, the username and password steps are",
           not f.sensitive(223))
     r = f.on_text(223, "x")
     check("a one-letter school search is refused", "two letters" in r.text)
     r = f.on_text(223, "nonexistent school")
-    check("an unknown school says so and keeps asking", "No school found" in r.text and f.sessions[223].state == "login_school")
+    check("an unknown school says so and keeps asking", "no school found" in r.text and f.sessions[223].state == "login_school")
     r = f.on_text(223, "demo")
     check("a school name shows numbered matches with buttons", "1. Demo School" in r.text and buttons(r) == [("1", "school:0")] and f.sessions[223].state == "login_pick")
     r = f.on_text(223, "demo again")
@@ -154,13 +154,13 @@ def test_bot_conversation(check):
     check("choosing the school asks for the username", "Demo School" in r.text and "username" in r.text and f.sessions[223].state == "login_user")
     check("the username message is hidden", f.sensitive(223))
     r = f.on_text(223, "anna")
-    check("then the password, with the privacy warning, and it is hidden", "never store" in r.text and "Telegram itself" in r.text and f.sensitive(223))
+    check("then the password, with the privacy warning, and it is hidden", "never store" in r.text and "telegram itself" in r.text and f.sensitive(223))
     r = f.on_text(223, "demo")
-    check("a correct login reports school, Kurse and homework", "Logged in at Demo School" in r.text and "4 Kurse" in r.text
-          and "1 open" in r.text and "did not keep your password" in r.text)
+    check("a correct login reports school, Kurse and homework", "logged in at Demo School" in r.text and "4 kurse" in r.text
+          and "1 open" in r.text and "didn't keep your password" in r.text)
     check("nothing about the login is kept after it (no session, no username, no password)", 223 not in f.sessions)
     check("the chosen school is remembered for the account", accounts.school_of("tg:223")["name"] == "Demo School")
-    check("/week lists the lessons with a cancelled one tagged", "Week" in f.week(223).text and "[cancelled]" in f.week(223).text)
+    check("/week lists the lessons with a cancelled one tagged", "week" in f.week(223).text and "[cancelled]" in f.week(223).text)
     check("/week next and /today answer", f.week(223, "next").text and f.today(223).text)
     check("/homework shows the open item", "Aufgabenblatt" in f.homework(223).text)
     f.on_files(223, [(png((7, 7, 7)), "z.png")])
@@ -176,7 +176,7 @@ def test_bot_conversation(check):
     f.cancel(224)
     f.login(224)
     check("photos cannot be sent in the middle of a login", "middle of logging in" in f.on_files(224, [(png((3, 3, 3)), "w2.png")]).text)
-    check("/cancel ends a login in progress", "Nothing was saved" in f.cancel(224).text and 224 not in f.sessions)
+    check("/cancel ends a login in progress", "nothing saved" in f.cancel(224).text and 224 not in f.sessions)
     f.login(224); f.sessions[224].touched -= tb.SESSION_IDLE + 5
     check("an abandoned login expires and is no longer treated as secret", not f.sensitive(224))
     check("/logout forgets the schedule and the school", "gone" in f.logout(223).text and "/login" in f.week(223).text and accounts.school_of("tg:223") is None)
@@ -192,10 +192,10 @@ def test_bot_conversation(check):
           and "more matches" in r.text and "School 7" in r.text)
     def too_many(q, limit=8): raise sch.TooManyResults()
     sch.search = too_many
-    check("a too-broad search asks for more of the name", "Too many schools" in f.on_text(223, "gymnasium").text)
+    check("a too-broad search asks for more of the name", "too many schools" in f.on_text(223, "gymnasium").text)
     def unreachable(q, limit=8): raise sch.SchoolSearchError("down")
     sch.search = unreachable
-    check("WebUntis being unreachable gives a friendly message", "couldn't reach" in f.on_text(223, "gymnasium").text)
+    check("WebUntis being unreachable gives a friendly message", "can't reach" in f.on_text(223, "gymnasium").text)
     sch.search = orig_search
     f.cancel(223)
     accounts._fails.clear()
@@ -207,7 +207,7 @@ def test_bot_conversation(check):
 
     for i in range(5):
         guided(f, 223, username=f"mallory{i}", password="x")
-    check("repeated failed logins are throttled", "Too many" in guided(f, 223, password="demo")[-1].text)
+    check("repeated failed logins are throttled", "too many" in guided(f, 223, password="demo")[-1].text)
     accounts._fails.clear()
 
     # ---- 7. search / show / delete / retry (reading faked) ------------------------------------------
@@ -219,14 +219,14 @@ def test_bot_conversation(check):
     check("save reply promises a message when reading finishes", "tell you when" in r.text and mid in f2.from_telegram)
     check("worker reads it", wait(lambda: materials.material_text(mid, "tg:222")[0].ocr_status == "done"))
     check("/search finds it by a word in the text", f2.search(222, "ableitung").text.count(f"#{mid}") == 1)
-    check("/search with nothing to find / no words", "Nothing found" in f2.search(222, "zzzz").text and "Tell me" in f2.search(222).text)
-    check("/search is private to the owner", "Nothing found" in f2.search(223, "ableitung").text)
+    check("/search with nothing to find / no words", "nothing found" in f2.search(222, "zzzz").text and "tell me" in f2.search(222).text)
+    check("/search is private to the owner", "nothing found" in f2.search(223, "ableitung").text)
     check("/show gives the full text", "Rechenweg fehlt" in f2.show(222, str(mid)).text and "Rechenweg fehlt" in f2.show(222, f"#{mid}").text)
-    check("/show for someone else's upload says no such upload", "No upload" in f2.show(223, str(mid)).text)
-    check("/show without a number explains", "Which one" in f2.show(222).text)
-    check("on_read message names the first line", "Aufgabe 1" in f2.on_read(mid, "done", "\nAufgabe 1: x") and "/retry" in f2.on_read(mid, "failed", ""))
-    check("retry for a stranger refused", "Couldn't" in f2.retry(223, str(mid)).text)
-    check("retry for the owner accepted", "Reading" in f2.retry(222, str(mid)).text)
+    check("/show for someone else's upload says no such upload", "no upload" in f2.show(223, str(mid)).text)
+    check("/show without a number explains", "which one" in f2.show(222).text)
+    check("on_read message names the first line", "Aufgabe 1" in f2.on_read(222, mid, "done", "\nAufgabe 1: x") and "/retry" in f2.on_read(222, mid, "failed", ""))
+    check("retry for a stranger refused", "can't do that" in f2.retry(223, str(mid)).text)
+    check("retry for the owner accepted", "reading" in f2.retry(222, str(mid)).text)
     wait(lambda: materials.material_text(mid, "tg:222")[0].ocr_status == "done")
 
     got = []
@@ -241,11 +241,11 @@ def test_bot_conversation(check):
     b = materials.save_upload(shared, "s.png", "M-GK4", "exam", owner="tg:111")
     stored = DATA / "uploads" / f"{a.sha256}.png"
     wait(lambda: all(materials.material_text(x.id, x.owner)[0].ocr_status != "pending" for x in (a, b)))
-    check("/delete by a stranger refused", "No upload" in f2.delete(223, str(a.id)).text and stored.exists())
-    check("/delete removes the upload and its search entry", f2.delete(222, str(a.id)).text.startswith("Deleted")
+    check("/delete by a stranger refused", "no upload" in f2.delete(223, str(a.id)).text and stored.exists())
+    check("/delete removes the upload and its search entry", f2.delete(222, str(a.id)).text.startswith("deleted")
           and materials.material_text(a.id, "tg:222") is None)
     check("the shared file stays while another owner still has it", stored.exists())
-    check("deleting the last copy removes the file", f2.delete(111, str(b.id)).text.startswith("Deleted") and not stored.exists())
+    check("deleting the last copy removes the file", f2.delete(111, str(b.id)).text.startswith("deleted") and not stored.exists())
     note_left = list((VAULT / "M-GK4").glob(f"* exam {a.id}.md"))
     check("the vault note is removed too", note_left == [])
 
@@ -258,10 +258,10 @@ def test_bot_conversation(check):
     check("an account's chats include the linked Telegram", accounts.telegram_ids_for(user) == [555])
 
     # ---- 9. command menu and handlers ---------------------------------------------------------------
-    names = [c for c, _ in tb.COMMANDS] + [c for c, _ in tb.ADMIN_COMMANDS]
+    names = [c for c, *_ in tb.COMMANDS] + [c for c, *_ in tb.ADMIN_COMMANDS]
     check("command names are unique and lowercase", len(names) == len(set(names)) and all(n == n.lower() and n.isalpha() for n in names))
-    check("descriptions are 3-256 characters", all(3 <= len(d) <= 256 for _, d in tb.COMMANDS + tb.ADMIN_COMMANDS))
-    check("admin commands are not in the public menu", not {c for c, _ in tb.ADMIN_COMMANDS} & {c for c, _ in tb.COMMANDS})
+    check("descriptions are 3-256 characters, in both languages", all(3 <= len(d) <= 256 for _, en, de in tb.COMMANDS + tb.ADMIN_COMMANDS for d in (en, de)))
+    check("admin commands are not in the public menu", not {c for c, *_ in tb.ADMIN_COMMANDS} & {c for c, *_ in tb.COMMANDS})
     app = tb.build_application("123456:TEST-TOKEN-NOT-REAL")
     registered = {c for h in app.handlers[0] if hasattr(h, "commands") for c in h.commands}
     check("every menu command has a handler", set(names) <= registered)
@@ -313,15 +313,15 @@ def test_bot_conversation(check):
     check("a Kurs whose button data would exceed 64 bytes gets no button", tb._rows(["ä" * 30, "M-GK4"]) == [[("M-GK4", "kurs:M-GK4")]])
 
     check("list_materials with an empty owner returns nothing, not everyone's", materials.list_materials(owner="") == [])
-    check("a non-ASCII digit after /invite does not crash", "Invite for up to 25" in f.invite(111, "²").text)
-    check("/show and /delete with a non-ASCII digit do not crash", "Which one" in f.show(222, "²").text and "Which one" in f.delete(222, "²").text)
+    check("a non-ASCII digit after /invite does not crash", "invite for up to 25" in f.invite(111, "²").text)
+    check("/show and /delete with a non-ASCII digit do not crash", "which one" in f.show(222, "²").text and "which one" in f.delete(222, "²").text)
     g = tb.Flow()
     g.start(950, accounts.create_invite(5))
     r = g.on_files(950, [(png((i, 0, 0)), f"p{i}.png") for i in range(25)])
     check("at most 20 photos are held per person", len(g.sessions[950].pending) == 20 and "20 photos at a time" in r.text)
     big = tb.MAX_PENDING_BYTES
     r = tb.Flow(); r.start(951, accounts.create_invite(5))
-    check("an oversized batch is refused without holding it", "Too much" in r.on_files(951, [(b"x" * (big + 1), "huge.png")]).text and 951 not in r.sessions)
+    check("an oversized batch is refused without holding it", "too much" in r.on_files(951, [(b"x" * (big + 1), "huge.png")]).text and 951 not in r.sessions)
     g.sessions[950].touched -= tb.SESSION_IDLE + 5
     g.on_files(950, [(png((9, 9, 9)), "n.png")])
     check("an abandoned upload expires and a new one starts fresh", len(g.sessions[950].pending) == 1)

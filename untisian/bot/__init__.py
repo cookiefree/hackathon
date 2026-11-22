@@ -1,6 +1,7 @@
 """The Telegram bot. `Flow` is the conversation (no Telegram imports, easy to test); `adapter` connects it."""
 from untisian.bot.adapter import build_application, start_bot, stop_bot
-from untisian.bot.common import ADMIN_COMMANDS, COMMANDS, MAX_PENDING_BYTES, SESSION_IDLE, Reply, _rows
+from untisian.bot.common import MAX_PENDING_BYTES, SESSION_IDLE, Reply, _rows
+from untisian.bot.texts import ADMIN_COMMANDS, COMMANDS
 from untisian.bot.flow import Flow
 from untisian.bot.adapter import _chunks
 from untisian.core.materials import KINDS

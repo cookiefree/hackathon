@@ -5,7 +5,8 @@ import time
 from collections.abc import Callable
 
 from untisian import config
-from untisian.bot.common import ADMIN_COMMANDS, COMMANDS, MAX_DOWNLOAD, SHOW_LIMIT, Reply
+from untisian.bot.common import MAX_DOWNLOAD, SHOW_LIMIT, Reply
+from untisian.bot.texts import ADMIN_COMMANDS, COMMANDS
 from untisian.bot.flow import Flow
 from untisian.core import accounts, alerts, notify
 from untisian.core.accounts import admin_ids as allowed_users
@@ -63,12 +64,11 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
                 try:
                     await msg.delete()
                 except Exception:
-                    warning = ("\n\nI couldn't delete your message, so it is still visible in this chat. "
-                               "Please delete it yourself.")
+                    warning = flow.t(uid, "msg_not_deleted")
             if name not in ("start", "link") and await asyncio.to_thread(flow.resolve, uid) is None:
                 return await refuse(update)
             if name in ("quiz", "words") and await asyncio.to_thread(flow.needs_build, uid, *args):
-                await msg.reply_text("Reading the words from that page, one moment...")
+                await msg.reply_text(flow.t(uid, "reading_words"))
             reply = await asyncio.to_thread(getattr(flow, name), uid, *args)
             if warning:
                 reply = Reply(reply.text + warning, reply.buttons)
@@ -76,6 +76,8 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
                 await _send(_ChatSender(ctx.bot, update.effective_chat.id), reply)
             else:
                 await _send(msg, reply)
+            if name in ("deutsch", "english"):          # the "/" menu follows the language
+                await _publish_menu(ctx.bot, uid, flow.lang(uid))
         return handler
 
     class _ChatSender:
@@ -94,10 +96,10 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
         elif msg.document and (msg.document.mime_type or "").startswith("image/"):
             ref, name = msg.document, msg.document.file_name or "image"
         else:
-            await msg.reply_text("I can only file photos (JPEG, PNG, WebP).")
+            await msg.reply_text(flow.t(msg.from_user.id, "only_photos"))
             return None
         if ref.file_size and ref.file_size > MAX_DOWNLOAD:
-            await msg.reply_text("That file is over 20 MB, which is more than a bot can download.")
+            await msg.reply_text(flow.t(msg.from_user.id, "too_big"))
             return None
         f = await ref.get_file()
         return bytes(await f.download_as_bytearray()), name
@@ -130,8 +132,7 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
             try:
                 await msg.delete()
             except Exception:
-                warning = ("\n\nI couldn't delete your message, so it is still visible in this chat. "
-                           "Please delete it yourself.")
+                warning = flow.t(uid, "msg_not_deleted")
         if not hide:
             try:
                 await ctx.bot.send_chat_action(update.effective_chat.id, "typing")   # a chat answer takes a moment
@@ -155,7 +156,7 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
         log.error("telegram handler error: %s", type(ctx.error).__name__)   # type only: never log message content
         try:
             if getattr(update, "effective_message", None):
-                await update.effective_message.reply_text("Something went wrong. Please try again.")
+                await update.effective_message.reply_text(flow.t(update.effective_user.id, "went_wrong"))
         except Exception:
             pass
 
@@ -164,7 +165,8 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
     app = Application.builder().token(token).concurrent_updates(True).build()
     app.add_handler(CommandHandler("whoami", cmd_whoami, filters=private))
     for name in ("start", "help", "login", "link", "logout", "week", "today", "homework", "list", "search",
-                 "show", "delete", "retry", "quiz", "words", "cancel", "stop", "invite", "invites", "revoke"):
+                 "show", "delete", "retry", "quiz", "words", "cancel", "stop", "deutsch", "english",
+                 "invite", "invites", "revoke"):
         app.add_handler(CommandHandler(name, command(name, secret=name in ("login", "link")), filters=private))
     app.add_handler(MessageHandler((filters.PHOTO | filters.Document.IMAGE) & private, on_media))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & private, on_text))
@@ -177,25 +179,35 @@ def build_application(token: str, kurs_source: Callable[[str], list[str]] | None
         if mid not in flow.from_telegram or loop is None:
             return
         flow.from_telegram.discard(mid)
-        message = flow.on_read(mid, status, text)
         for chat_id in accounts.telegram_ids_for(owner):
+            message = flow.on_read(chat_id, mid, status, text)
             asyncio.run_coroutine_threadsafe(app.bot.send_message(chat_id, message), loop)
 
     notify.on_ocr_finished(announce)
     return app
 
 
+def _menu(lang: str, admin: bool) -> list:
+    from telegram import BotCommand
+    rows = COMMANDS + (ADMIN_COMMANDS if admin else [])
+    return [BotCommand(c, de if lang == "de" else en) for c, en, de in rows]
+
+
+async def _publish_menu(bot, uid: int, lang: str) -> None:
+    """This person's "/" menu, in their language (admins also get the invite commands)."""
+    from telegram import BotCommandScopeChat
+    try:
+        await bot.set_my_commands(_menu(lang, uid in allowed_users()), scope=BotCommandScopeChat(chat_id=uid))
+    except Exception as e:               # they may never have opened the chat yet
+        log.warning("Could not set the command menu for %s: %s", uid, type(e).__name__)
+
+
 async def _publish_commands(app) -> None:
-    """Fill Telegram's "/" menu. Admins also get the invite commands."""
-    from telegram import BotCommand, BotCommandScopeChat
-    public = [BotCommand(c, d) for c, d in COMMANDS]
-    await app.bot.set_my_commands(public)
-    for admin in allowed_users():
-        try:
-            await app.bot.set_my_commands(public + [BotCommand(c, d) for c, d in ADMIN_COMMANDS],
-                                          scope=BotCommandScopeChat(chat_id=admin))
-        except Exception as e:           # the admin may never have opened the chat yet
-            log.warning("Could not set the admin command menu for %s: %s", admin, type(e).__name__)
+    """Fill Telegram's "/" menu: English for everyone, plus a per-chat menu for admins and German speakers."""
+    await app.bot.set_my_commands(_menu("en", False))
+    chats = set(allowed_users()) | set(await asyncio.to_thread(accounts.german_speakers))
+    for uid in chats:
+        await _publish_menu(app.bot, uid, await asyncio.to_thread(accounts.language_of, uid))
 
 
 _conflict_warned = 0.0

@@ -119,5 +119,5 @@ def test_untis_alerts(check):
           calls["n"] >= 3 and sent == [(111, "Untis update:\n- Entfall: Mon 23.11. 08:00 ES-GK1")])
 
     # ---- the reminder feature is gone ---------------------------------------------------------------------------
-    check("no /remind command or menu entry any more", "remind" not in [c for c, _ in tb.COMMANDS]
+    check("no /remind command or menu entry any more", "remind" not in [c for c, *_ in tb.COMMANDS]
           and "remind" not in {c for h in tb.build_application("123456:TEST-TOKEN-NOT-REAL").handlers[0] if hasattr(h, "commands") for c in h.commands})

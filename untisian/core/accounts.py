@@ -407,3 +407,21 @@ def telegram_login(telegram_id: int, owner: str, username: str, password: str, s
                                   "server": school.server if school else config.get("UNTIS_SERVER"),
                                   "school": school_id})
     return len(kurse_of(owner)), sum(1 for h in homework if not h.completed)
+
+
+def language_of(telegram_id: int) -> str:
+    """The language the bot speaks with this person: 'en' (default) or 'de'."""
+    with connect() as con:
+        row = con.execute("SELECT lang FROM user_prefs WHERE telegram_id=?", (str(telegram_id),)).fetchone()
+    return row["lang"] if row and row["lang"] in ("en", "de") else "en"
+
+
+def set_language(telegram_id: int, lang: str) -> None:
+    with connect() as con:
+        con.execute("INSERT INTO user_prefs (telegram_id, lang) VALUES (?, ?) "
+                    "ON CONFLICT(telegram_id) DO UPDATE SET lang=excluded.lang", (str(telegram_id), lang))
+
+
+def german_speakers() -> list[int]:
+    with connect() as con:
+        return [int(r["telegram_id"]) for r in con.execute("SELECT telegram_id FROM user_prefs WHERE lang='de'")]
