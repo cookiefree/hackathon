@@ -7,6 +7,7 @@ leniently: accents, a missing article or a one-letter typo still count, with a n
 import json
 import random
 import re
+import threading
 import unicodedata
 from collections import namedtuple
 from dataclasses import dataclass, field
@@ -20,12 +21,22 @@ MAX_ITEMS = 200
 ROUND_SIZE = 25
 MAX_LEN = 120
 
-PROMPT = """This is a photo of a vocabulary page from school. Extract every vocabulary entry as a pair.
-- front: the foreign-language word or phrase exactly as printed (keep articles, 'to', plural or gender hints).
-- back: its translation or explanation exactly as printed.
-- Only real vocabulary entries. Ignore headings, exercises, instructions and example sentences.
-- Copy the text exactly. Never invent, translate or correct anything. Skip any entry where one side is missing or unreadable.
-- Also name the two languages as the page does (for example "Spanisch" and "Deutsch"): front_language and back_language."""
+PROMPT = """This is a photo of a vocabulary list from a school textbook or worksheet. Extract the vocabulary entries as pairs.
+
+How these pages are laid out:
+- Entries are in columns: a foreign-language column and, next to it, its translation column. A page often has two such column pairs side by side (foreign | translation | foreign | translation). Read each column pair on its own, top to bottom, and pair every word with the translation on the same line next to it. Never pair words across different column pairs.
+- The word to learn (the headword) is usually printed in bold. Its translation is the text beside it on the same line, and may wrap onto the next line.
+
+What to extract:
+- front: the headword exactly as printed, with its article, 'to', gender, plural or (irr.) hints and placeholders like algo, alguien, sth, sb.
+- back: its translation exactly as printed, with placeholders like etw. or jdn. Keep alternatives separated by ';' or '/' as printed. Join a translation that wraps onto two lines into one line, and rejoin a word split by a hyphen at the line end.
+
+What to leave out:
+- Example sentences: lines starting with a dash (-, –, —), and full sentences under a headword, in either language. Their translations too.
+- Hints in a third language marked with a small flag icon (for example an English word next to a British flag), "false friend" or related-word hints next to a symbol, headings like "Bloque A", page numbers and exercise instructions.
+- Never invent, translate or correct anything. Skip an entry if one side is missing or unreadable.
+
+Also name the two languages in the language the page uses for its translations (for example front_language "Spanisch", back_language "Deutsch")."""
 
 SCHEMA = {"type": "OBJECT", "properties": {
     "front_language": {"type": "STRING"}, "back_language": {"type": "STRING"},
@@ -82,8 +93,25 @@ def set_for_material(material_id: int, owner: str):
         return con.execute("SELECT * FROM vocab_sets WHERE material_id=? AND owner=?", (material_id, owner)).fetchone()
 
 
+_building: dict[int, threading.Lock] = {}
+_building_lock = threading.Lock()
+
+
 def build_set(material_id: int, owner: str):
-    """Read the word pairs from an upload (once) and store them. Returns the set row."""
+    """Read the word pairs from an upload (once) and store them. Returns the set row.
+    The OCR worker and a /quiz can ask at the same moment: the second one waits and gets the same set."""
+    with _building_lock:
+        lock = _building.setdefault(material_id, threading.Lock())
+    with lock:
+        try:
+            return _build_set(material_id, owner)
+        finally:
+            with _building_lock:
+                if len(_building) > 1000:
+                    _building.clear()
+
+
+def _build_set(material_id: int, owner: str):
     existing = set_for_material(material_id, owner)
     if existing:
         return existing
@@ -110,6 +138,20 @@ def build_set(material_id: int, owner: str):
         con.executemany("INSERT INTO vocab_items (set_id, front, back) VALUES (?,?,?)",
                         [(cur.lastrowid, f, b) for f, b in items])
     return set_for_material(material_id, owner)
+
+
+def as_text(vset) -> str:
+    """The word list as plain text: what /show prints and what search finds."""
+    rows = items_of(vset["id"])
+    head = f"{len(rows)} words, {vset['lang_front'] or '?'} -> {vset['lang_back'] or '?'}"
+    return head + "\n\n" + "\n".join(f"{r['front']} = {r['back']}" for r in rows)
+
+
+def drop_set(material_id: int) -> None:
+    """Forget the words read from an upload (and their practice counts), so the page is read again."""
+    with connect() as con:
+        con.execute("DELETE FROM vocab_items WHERE set_id IN (SELECT id FROM vocab_sets WHERE material_id=?)", (material_id,))
+        con.execute("DELETE FROM vocab_sets WHERE material_id=?", (material_id,))
 
 
 def items_of(set_id: int) -> list:

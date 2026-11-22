@@ -138,6 +138,8 @@ def request_reread(material_id: int, owner: str) -> bool:
                           "WHERE id=? AND owner=? AND ocr_status != 'pending'", (material_id, owner))
     if cur.rowcount == 0:
         return False
+    from untisian.core import vocab
+    vocab.drop_set(material_id)              # a vocab page's words are read again too
     from untisian.ocr import worker
     worker.enqueue(material_id)
     return True
@@ -160,6 +162,21 @@ def search_materials(q: str, owner: str, limit: int = 20) -> list[Material]:
     return [_material(r) for r in rows]
 
 
+def _vocab_table(row) -> str | None:
+    """A vocab page's words as a two-column Markdown table, or None if it has none (yet)."""
+    if row["kind"] != "vocab":
+        return None
+    from untisian.core import vocab
+    vset = vocab.set_for_material(row["id"], row["owner"])
+    rows = vocab.items_of(vset["id"]) if vset else []
+    if not rows:
+        return None
+    cell = lambda s: s.replace("|", "\\|")
+    lines = [f"## Words\n\n| {vset['lang_front'] or 'Word'} | {vset['lang_back'] or 'Translation'} |", "|---|---|"]
+    lines += [f"| {cell(r['front'])} | {cell(r['back'])} |" for r in rows]
+    return "\n".join(lines)
+
+
 def write_vault_note(row) -> Path:
     """One Markdown note per photo, with the image embedded. Rebuildable from the DB."""
     kurs_dir = _kurs_dir(row["kurs"])
@@ -171,11 +188,11 @@ def write_vault_note(row) -> Path:
 
     day = row["created"][:10]
     note = kurs_dir / f"{day} {row['kind']} {row['id']}.md"
-    text = row["ocr_text"] or "_Text not read yet._"
+    body = _vocab_table(row) or "## Text\n" + (row["ocr_text"] or "_Text not read yet._")
     note.write_text(
         f"---\nid: {row['id']}\nowner: {row['owner']}\nkurs: {row['kurs']}\nkind: {row['kind']}\n"
         f"uploaded: {row['created']}\nsha256: {row['sha256']}\n---\n"
-        f"# {row['title'] or row['filename']}\n\n![[{src.name}]]\n\n## Text\n{text}\n",
+        f"# {row['title'] or row['filename']}\n\n![[{src.name}]]\n\n{body}\n",
         encoding="utf-8")
     return note
 
@@ -222,11 +239,11 @@ def delete_material(material_id: int, owner: str) -> bool:
         row = con.execute("SELECT * FROM materials WHERE id=? AND owner=?", (material_id, owner)).fetchone()
         if row is None:
             return False
-        con.execute("DELETE FROM vocab_items WHERE set_id IN (SELECT id FROM vocab_sets WHERE material_id=?)", (material_id,))
-        con.execute("DELETE FROM vocab_sets WHERE material_id=?", (material_id,))
         con.execute("DELETE FROM materials WHERE id=?", (material_id,))
         con.execute("DELETE FROM materials_fts WHERE rowid=?", (material_id,))
         still_used = con.execute("SELECT 1 FROM materials WHERE sha256=? LIMIT 1", (row["sha256"],)).fetchone()
+    from untisian.core import vocab
+    vocab.drop_set(material_id)
 
     kurs_dir = _kurs_dir(row["kurs"])
     for note in kurs_dir.glob(f"* {row['kind']} {material_id}.md"):

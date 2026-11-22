@@ -43,12 +43,25 @@ def process(material_id: int) -> None:
         return
     path = data_dir() / row["path"]
     try:
-        text = ocr.redact_names(gemini.read_image(path.read_bytes(), MIME.get(path.suffix, "image/jpeg")))
+        text = _vocab_text(row) if row["kind"] == "vocab" else None
+        if text is None:          # not a vocab page, or no word list found in it: read it as ordinary text
+            text = ocr.redact_names(gemini.read_image(path.read_bytes(), MIME.get(path.suffix, "image/jpeg")))
         status = "done"
     except (ocr.OcrError, OSError) as e:
         log.warning("Could not read material %s: %s", material_id, e)
         text, status = "", "failed"
     materials.store_ocr_result(material_id, text, status)
+
+
+def _vocab_text(row) -> str | None:
+    """A vocab page is read once, as word pairs (column by column), not as running text.
+    The same read prepares the quiz. None if no word list was found."""
+    from untisian.core import vocab
+    try:
+        return vocab.as_text(vocab.build_set(row["id"], row["owner"]))
+    except vocab.VocabError as e:
+        log.warning("No word pairs read from material %s: %s", row["id"], e)
+        return None
 
 
 def enqueue_backlog() -> int:

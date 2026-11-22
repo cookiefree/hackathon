@@ -3,6 +3,7 @@ Gemini is faked, so no network and no cost.
 """
 import os
 import struct
+import time
 import zlib
 
 
@@ -11,7 +12,16 @@ from untisian.core import materials
 from untisian import bot as tb
 from untisian.core import vocab
 from untisian.core.db import connect
-from untisian.ocr import OcrError, gemini
+from untisian.ocr import OcrError, gemini, worker
+
+
+def wait(pred, secs=5):
+    end = time.time() + secs
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def test_vocabulary(check):
@@ -75,6 +85,8 @@ def test_vocabulary(check):
 
     f = tb.Flow(); f.bot_username = "testbot"
     check("the admin is in", f.resolve(111) == "tg:111")
+    real_enqueue = worker.enqueue
+    worker.enqueue = lambda mid: None                 # the background reader stays idle until section 5
     m1 = materials.save_upload(png((1, 1, 1)), "v1.png", "ES-GK1", "vocab", "Unidad 3", owner="tg:111")
     check("'vocab' is an upload kind", "vocab" in materials.KINDS and m1.kind == "vocab")
     check("/quiz needs to read the page first, and says so", f.needs_build(111, str(m1.id)) and not f.needs_build(111, "999"))
@@ -220,6 +232,49 @@ def test_vocabulary(check):
     r1 = tb.Flow()._quiz_begin(111, one, False)
     check("a one-word test says '1 word', not '1 words'", "1 word," in r1.text and "1 words" not in r1.text)
     tb.Flow().cancel(111)
+
+    # ---- 5. a vocab upload is read as word pairs, not as running text ---------------------------------
+    worker.enqueue = real_enqueue
+    texts = []
+    gemini.read_image = lambda data, mime: (texts.append(1), "Spanish column then German column")[1]
+    calls.clear()
+    v = materials.save_upload(png((9, 9, 9)), "v9.png", "ES-GK1", "vocab", "Unidad 4", owner="tg:111")
+    def read_done():
+        got = materials.material_text(v.id, "tg:111")
+        return got and got[0].ocr_status == "done"
+    check("the vocab upload gets read", wait(read_done))
+    m, text = materials.material_text(v.id, "tg:111")
+    check("its text is the word pairs, from the pair reader only", text.startswith("4 words, Spanisch -> Deutsch")
+          and "la casa = das Haus" in text and len(calls) == 1 and not texts)
+    f.cancel(111)                                      # an earlier section left a test running
+    qr = f.quiz(111, str(v.id))
+    check("so /quiz needs no second read", not f.needs_build(111, str(v.id)) and "4 words" in qr.text)
+    f.cancel(111)
+    note = next((materials.vault_dir() / "ES-GK1").glob(f"* vocab {v.id}.md")).read_text()
+    check("the vault note has a Spanisch | Deutsch table", "| Spanisch | Deutsch |" in note
+          and "| la casa | das Haus |" in note and "## Text" not in note)
+    check("search finds a word from the list", any(x.id == v.id for x in materials.search_materials("cocina", "tg:111")))
+    check("/retry reads the words again", "Reading" in f.retry(111, str(v.id)).text and wait(read_done) and len(calls) == 2)
+    gemini.extract_json = lambda *a: {"front_language": "", "back_language": "", "items": []}
+    w = materials.save_upload(png((8, 8, 8)), "w.png", "ES-GK1", "vocab", owner="tg:111")
+    wait(lambda: materials.material_text(w.id, "tg:111")[0].ocr_status == "done")
+    check("a 'vocab' photo without a word list is read as normal text instead",
+          materials.material_text(w.id, "tg:111")[1] == "Spanish column then German column")
+    gemini.extract_json = fake_extract
+
+    # two readers at once (the worker and a /quiz) read the page once and share the set
+    import threading
+    slow = []
+    def slow_extract(*a):
+        slow.append(1); time.sleep(0.3); return FAKE
+    gemini.extract_json = slow_extract
+    worker.enqueue = lambda mid: None
+    z = materials.save_upload(png((7, 7, 7)), "z.png", "ES-GK1", "vocab", owner="tg:111")
+    out = []
+    ts = [threading.Thread(target=lambda: out.append(vocab.build_set(z.id, "tg:111")["id"])) for _ in range(2)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    check("two readers at once: one read, one set", len(slow) == 1 and len(out) == 2 and out[0] == out[1])
+    gemini.extract_json = fake_extract
 
     # the menu
     names = [c for c, _ in tb.COMMANDS]
